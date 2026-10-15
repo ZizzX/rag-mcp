@@ -1,6 +1,7 @@
 """Several processes share one index directory: one MCP server per client session plus `rag-mcp ingest`."""
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -10,6 +11,7 @@ from rag_mcp import server
 from rag_mcp.chunking import Chunk
 from rag_mcp.config import Settings
 from rag_mcp.embeddings import HashEmbedder
+from rag_mcp.loaders import iter_files
 from rag_mcp.pipeline import Pipeline
 from rag_mcp.store import HybridStore, IndexBusy
 
@@ -50,6 +52,30 @@ def test_readers_share_dir_with_a_writer_and_see_its_commit(tmp_path):
     for hits in after:
         assert hits[0] == "deploy"
     assert "dense" in readers[0].search("kubernetes", top_k=1)[0]["matched"]  # vectors.npy reloaded too
+
+
+def test_needs_ingest_sees_changes_that_keep_an_old_mtime(workspace):
+    docs, index = workspace
+    pipe = Pipeline(_local_settings(docs, index))
+    pipe.ingest()
+    old = 1_000_000_000  # long before the manifest was written, like `cp -p` or unpacking an archive
+
+    target = docs / "onboarding.md"
+    target.write_text("# Onboarding\n\nBadges are issued at the front desk.", encoding="utf-8")
+    os.utime(target, (old, old))
+    assert pipe.needs_ingest() is True
+    assert pipe.ingest().updated == 1
+    assert pipe.needs_ingest() is False
+
+    target.rename(docs / "welcome.md")  # same number of files, the new name has the old mtime
+    assert pipe.needs_ingest() is True
+    pipe.ingest()
+    assert pipe.needs_ingest() is False
+
+    os.utime(docs / "welcome.md")  # touched, content unchanged: one ingest, then quiet again
+    assert pipe.needs_ingest() is True
+    assert pipe.ingest().unchanged == len(list(iter_files(docs)))
+    assert pipe.needs_ingest() is False
 
 
 def test_cli_ingest_while_a_server_store_is_open(workspace):

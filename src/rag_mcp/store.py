@@ -137,7 +137,7 @@ class HybridStore:
             self._matrix = np.zeros((0, 0), dtype=np.float32)
 
     def manifest(self) -> dict[str, dict]:
-        """doc_id -> {source, content_hash, chunks, embedder}"""
+        """doc_id -> {source, content_hash, chunks, embedder, stat: [size, mtime_ns]}"""
         if self._manifest_path.exists():
             return json.loads(self._manifest_path.read_text(encoding="utf-8"))
         return {}

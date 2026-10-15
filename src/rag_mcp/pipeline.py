@@ -56,13 +56,17 @@ class Pipeline:
         s = self.settings
         if not s.docs_dir.exists():
             return False
-        manifest_path = s.index_dir / "manifest.json"
+        docs = {k: v for k, v in self.store.manifest().items() if k != "_meta"}
         files = list(iter_files(s.docs_dir))
-        if not manifest_path.exists():
-            return bool(files)
-        committed = manifest_path.stat().st_mtime
-        known = sum(1 for k in self.store.manifest() if k != "_meta")
-        return len(files) != known or any(f.stat().st_mtime > committed for f in files)
+        if len(files) != len(docs):
+            return True
+        # Compare size and mtime with what the last ingest saw (like rsync's quick check), not with
+        # the manifest's own mtime: a file copied with `cp -p` or unpacked keeps an old mtime.
+        for path in files:
+            entry = docs.get(doc_id_for(path.relative_to(s.docs_dir).as_posix()))
+            if entry is None or entry.get("stat") != _stat(path):
+                return True
+        return False
 
     def index_problem(self) -> str | None:
         """Why searching the index would give nothing useful, in words for the user; None when it is fine."""
@@ -118,8 +122,10 @@ class Pipeline:
             seen.add(doc_id)
             prev = manifest.get(doc_id)
             try:
+                stat = _stat(path)
                 content_hash = file_hash(path)
                 if prev and prev.get("content_hash") == content_hash:
+                    prev["stat"] = stat  # touched or copied back: same content, remember the new mtime
                     report.unchanged += 1
                     continue
                 doc = load_document(path, s.docs_dir)
@@ -135,6 +141,7 @@ class Pipeline:
                     "content_hash": content_hash,
                     "chunks": len(chunks),
                     "embedder": self.embedder.name,
+                    "stat": stat,
                 }
                 report.chunks += len(chunks)
                 log.info("indexed %s (%d chunks)", source, len(chunks))
@@ -217,6 +224,11 @@ class Pipeline:
             "projects": self.store.projects(),
             "shared_projects": self.settings.shared_projects,
         }
+
+
+def _stat(path: Path) -> list[int]:
+    st = path.stat()
+    return [st.st_size, st.st_mtime_ns]
 
 
 def configure_logging(verbose: bool = False) -> None:
