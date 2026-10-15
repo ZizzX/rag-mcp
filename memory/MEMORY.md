@@ -1,0 +1,1 @@
+- [git push https fails](git-push-https-no-credentials.md) — "could not read Username for https://github.com": push to git@github.com:ZizzX/rag-mcp.git directly
