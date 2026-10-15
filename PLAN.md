@@ -12,7 +12,7 @@
 
 ## Current focus
 
-- multi-session: хранилище без блокировки (T-002) в работе в ворктри reverent-dijkstra; PR #1 с понятной ошибкой ждёт CI.
+- multi-session: всё M1 в ревью — PR #1 (T-001) и PR #2 (T-002..T-004); оба трогают store.py, мёржить по очереди.
 
 ## Changelog
 - 2026-10-15 · board created
