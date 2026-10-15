@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
+import httpx
 import numpy as np
 from rank_bm25 import BM25Okapi
 
@@ -280,13 +281,21 @@ class HybridStore:
         top_k: int,
         candidate_multiplier: int = 4,
         source_prefixes: list[str] | None = None,
+        dense_errors: list[Exception] | None = None,
     ) -> list[dict]:
         """Hybrid search. `source_prefixes` restricts results to sources starting with any of them
-        ("shop-backend/", "common/", "specs/api.pdf")."""
+        ("shop-backend/", "common/", "specs/api.pdf"). With `dense_errors`, an unreachable embedder
+        is appended there and the search runs on BM25 alone instead of raising."""
         self._refresh()
         n = max(top_k * candidate_multiplier, top_k)
         prefixes = [p for p in (source_prefixes or []) if p] or None
-        dense = self._dense_search(query, n, prefixes)
+        try:
+            dense = self._dense_search(query, n, prefixes)
+        except httpx.HTTPError as e:
+            if dense_errors is None:
+                raise
+            dense_errors.append(e)
+            dense = []
         sparse = self._bm25_search(query, n, prefixes)
         fused: dict[str, float] = {}
         for ranking in (dense, sparse):

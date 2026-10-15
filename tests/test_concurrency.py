@@ -79,7 +79,7 @@ def test_reindex_tool_picks_up_new_files(workspace, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_search_explains_unreachable_ollama(workspace, monkeypatch):
+async def test_search_falls_back_to_bm25_when_ollama_is_down(workspace, monkeypatch):
     docs, index = workspace
     pipe = Pipeline(_local_settings(docs, index))
     pipe.ingest()
@@ -91,9 +91,11 @@ async def test_search_explains_unreachable_ollama(workspace, monkeypatch):
     monkeypatch.setattr(pipe.settings, "embed_provider", "ollama")
     monkeypatch.setattr(server, "_pipeline", pipe)
     r = await server.server.call_tool("search", {"query": "VPN"})
-    assert not r.is_error
-    error = json.loads(r.content[0].text)["error"]
-    assert "ollama serve" in error and pipe.settings.ollama_url in error
+    payload = json.loads(r.content[0].text)
+    assert "error" not in payload
+    assert payload["results"] and all(x["matched"] == ["bm25"] for x in payload["results"])
+    assert payload["degraded"].startswith("dense off:")
+    assert "ollama serve" in payload["degraded"] and pipe.settings.ollama_url in payload["degraded"]
 
 
 @pytest.mark.anyio

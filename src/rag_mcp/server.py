@@ -55,6 +55,10 @@ def pipeline() -> Pipeline:
 
 def error_text(e: Exception) -> str:
     """Turn an exception into a message the user can act on (MCP clients show bare errors otherwise)."""
+    return json.dumps({"error": error_message(e)}, ensure_ascii=False)
+
+
+def error_message(e: Exception) -> str:
     s = _pipeline.settings if _pipeline is not None else None
     if isinstance(e, httpx.ConnectError | httpx.TimeoutException):
         where = s.ollama_url if s and s.embed_provider == "ollama" else "the embedding server"
@@ -67,7 +71,7 @@ def error_text(e: Exception) -> str:
         msg = f"The embedding server answered {e.response.status_code}: {e.response.text[:200]}"
     else:
         msg = str(e) or type(e).__name__
-    return json.dumps({"error": msg}, ensure_ascii=False)
+    return msg
 
 
 def readable_errors(fn):
@@ -181,7 +185,8 @@ async def search(
     if problem:
         return json.dumps({"error": problem}, ensure_ascii=False)
     scope = await resolve_scope(ctx, source_prefix or None, all_projects, project)
-    results = pipeline().search(query, top_k=top_k, source_prefixes=scope["prefixes"])
+    dense_errors: list[Exception] = []
+    results = pipeline().search(query, top_k=top_k, source_prefixes=scope["prefixes"], dense_errors=dense_errors)
     slim = [
         {
             "source": r["source"],
@@ -197,7 +202,11 @@ async def search(
         }
         for r in results
     ]
-    return json.dumps({"scope": scope, "results": slim}, ensure_ascii=False, indent=1)
+    out = {"scope": scope, "results": slim}
+    if dense_errors:
+        log.warning("search without vectors: %s", dense_errors[0])
+        out["degraded"] = f"dense off: {error_message(dense_errors[0])} Results come from keyword (BM25) search only."
+    return json.dumps(out, ensure_ascii=False, indent=1)
 
 
 @server.tool()
