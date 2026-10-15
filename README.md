@@ -1,5 +1,7 @@
 # rag-mcp
 
+[![CI](https://github.com/ZizzX/rag-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ZizzX/rag-mcp/actions/workflows/ci.yml)
+
 Локальный RAG по вашим Markdown и PDF, доступный любому агенту через MCP
 (Claude Code, Claude Desktop, Cursor). Гибридный поиск: векторный (Qdrant) +
 BM25, слияние через RRF. Эмбеддинги через Ollama по умолчанию, без облака.
@@ -104,6 +106,9 @@ Claude Desktop (`claude_desktop_config.json`) или Cursor:
 На Windows путь вида `C:\\Users\\you\\rag-mcp`.
 
 ## Разработка
+
+CI (GitHub Actions) гоняет тесты, установщики и офлайн-прогон CLI и MCP-сервера
+на Ubuntu, macOS и Windows при каждом пуше в `main` и в pull request.
 
 ```bash
 uv sync --extra dev
