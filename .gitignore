@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Local secrets and machine-specific config
+.env
+
+# Documents and index are NOT part of this repo (see README: "Documents")
+data/docs/*
+!data/docs/.gitkeep
+data/index/
+eval/questions.jsonl

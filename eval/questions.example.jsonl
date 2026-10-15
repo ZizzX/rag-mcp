@@ -1,0 +1,5 @@
+# One JSON object per line. Copy to eval/questions.jsonl and adapt to your documents.
+{"question": "How long is the VPN certificate valid?", "expected_source": "onboarding.md"}
+{"question": "How many vacation days do we get per year?", "expected_text": "28 days"}
+{"question": "What is the time limit for a rollback?", "expected_source": "deploy-runbook.md"}
+{"question": "Where do I report a phishing email?", "expected_source": "security-policy.pdf"}
