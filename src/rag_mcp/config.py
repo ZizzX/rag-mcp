@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # Force a project (skips auto-detection). Mostly for tests and scripts.
     project: str | None = None
 
+    # Watch mode: the MCP server re-indexes documents when files change. Disable with
+    # RAG_WATCH=false (or `rag-mcp serve --no-watch`) and call `reindex` / `rag-mcp ingest` by hand.
+    watch: bool = True
+    watch_debounce_ms: int = 1500
+
     # Retrieval
     top_k: int = 6
     candidate_multiplier: int = 4  # how many candidates each retriever returns before fusion

@@ -36,8 +36,9 @@ INSTRUCTIONS = (
     "client is currently working in (based on its workspace folder) plus shared docs; the "
     "response says which scope was used. Cite `source` (and `page` when present) in answers. "
     "Use `fetch_document` when a passage is cut off. Use `index_status` to see indexed projects "
-    "and the detected one; pass `all_projects=true` to search everything. Call `reindex` after "
-    "the user adds or edits documents."
+    "and the detected one; pass `all_projects=true` to search everything. The server re-indexes "
+    "changed documents automatically; call `reindex` only if `index_status` shows watch disabled "
+    "or a just-saved file is not found yet."
 )
 
 server = MCPServer("rag-mcp", instructions=INSTRUCTIONS)
@@ -258,11 +259,24 @@ def startup_ingest() -> None:
         log.warning("startup ingest failed: %s", e)
 
 
-def run() -> None:
+def run(watch: bool | None = None) -> None:
+    """Serve on stdio.
+
+    With watch (default from RAG_WATCH) the server catches up on changed documents at start
+    and re-indexes whenever files in docs_dir change. Without it, only the one-off startup
+    ingest runs; add or edit documents and call `reindex`.
+    Both happen in the background, so the client gets its tools immediately.
+    """
     configure_logging()
-    # In the background, so the client gets its tools immediately; searches see the result once it commits.
-    threading.Thread(target=startup_ingest, name="startup-ingest", daemon=True).start()
-    server.run(transport="stdio")
+    pipe = pipeline()
+    if pipe.settings.watch if watch is None else watch:
+        pipe.start_watcher()
+    else:
+        threading.Thread(target=startup_ingest, name="startup-ingest", daemon=True).start()
+    try:
+        server.run(transport="stdio")
+    finally:
+        pipe.stop_watcher()
 
 
 if __name__ == "__main__":

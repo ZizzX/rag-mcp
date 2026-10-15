@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,10 @@ class Pipeline:
         self.embedder = make_embedder(self.settings)
         self.store = self._open_store()
         atexit.register(self.store.close)
+        # Serialises writers inside this process (the watcher thread and the `reindex` tool), so
+        # the second one waits instead of getting IndexBusy. Cross-process writers still use index.lock.
+        self._ingest_lock = threading.Lock()
+        self.watcher = None
 
     def _open_store(self) -> HybridStore:
         s = self.settings
@@ -87,14 +92,31 @@ class Pipeline:
         # Write through a separate store, so searches on self.store never see a half-applied
         # update; self.store picks the commit up from disk on its next read. The in-process
         # Qdrant used by tests cannot be shared that way, so it writes in place.
-        writer = self.store if self.store.in_memory else self._open_store()
-        try:
-            with writer.write_lock():
-                writer.reload()  # another process may have committed since we opened it
-                return self._ingest(writer, rebuild)
-        finally:
-            if writer is not self.store:
-                writer.close()
+        with self._ingest_lock:
+            writer = self.store if self.store.in_memory else self._open_store()
+            try:
+                with writer.write_lock():
+                    writer.reload()  # another process may have committed since we opened it
+                    return self._ingest(writer, rebuild)
+            finally:
+                if writer is not self.store:
+                    writer.close()
+
+    # ---------- watch mode ----------
+    def start_watcher(self):
+        """Re-index on file changes in a background thread (idempotent). Catches up first if needed."""
+        from .watcher import DocsWatcher
+
+        if self.watcher is None:
+            self.watcher = DocsWatcher(
+                self.settings.docs_dir, self.ingest, self.needs_ingest, self.settings.watch_debounce_ms
+            ).start()
+        return self.watcher
+
+    def stop_watcher(self) -> None:
+        if self.watcher is not None:
+            self.watcher.stop()
+            self.watcher = None
 
     def _ingest(self, store: HybridStore, rebuild: bool) -> IngestReport:
         s = self.settings
@@ -211,6 +233,12 @@ class Pipeline:
             "chunks": self.store.count(),
             "projects": self.store.projects(),
             "shared_projects": self.settings.shared_projects,
+            "watch": {
+                "enabled": self.watcher is not None,
+                "runs": self.watcher.runs if self.watcher else 0,
+                "skipped_busy": self.watcher.skipped_busy if self.watcher else 0,
+                "last_error": self.watcher.last_error if self.watcher else None,
+            },
         }
 
 
