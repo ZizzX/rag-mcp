@@ -37,24 +37,71 @@ class Pipeline:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
         self.embedder = make_embedder(self.settings)
-        self.store = HybridStore(
-            index_dir=self.settings.index_dir,
-            collection=self.settings.collection,
-            embedder=self.embedder,
-            qdrant_url=self.settings.qdrant_url,
-            qdrant_api_key=self.settings.qdrant_api_key,
-            rrf_k=self.settings.rrf_k,
-        )
+        self.store = self._open_store()
         atexit.register(self.store.close)
 
+    def _open_store(self) -> HybridStore:
+        s = self.settings
+        return HybridStore(
+            index_dir=s.index_dir,
+            collection=s.collection,
+            embedder=self.embedder,
+            qdrant_url=s.qdrant_url,
+            qdrant_api_key=s.qdrant_api_key,
+            rrf_k=s.rrf_k,
+        )
+
+    def needs_ingest(self) -> bool:
+        """True when a document was added, changed or removed since the last commit."""
+        s = self.settings
+        if not s.docs_dir.exists():
+            return False
+        manifest_path = s.index_dir / "manifest.json"
+        files = list(iter_files(s.docs_dir))
+        if not manifest_path.exists():
+            return bool(files)
+        committed = manifest_path.stat().st_mtime
+        known = sum(1 for k in self.store.manifest() if k != "_meta")
+        return len(files) != known or any(f.stat().st_mtime > committed for f in files)
+
+    def index_problem(self) -> str | None:
+        """Why searching the index would give nothing useful, in words for the user; None when it is fine."""
+        docs = {k: v for k, v in self.store.manifest().items() if k != "_meta"}
+        if not docs or not self.store.count():
+            return (
+                f"The index is empty. Put Markdown/PDF files into {self.settings.docs_dir} "
+                "and call the `reindex` tool (or run `rag-mcp ingest`)."
+            )
+        built_with = {m.get("embedder") for m in docs.values()} - {None, self.embedder.name}
+        if built_with:
+            return (
+                f"The index was built with {', '.join(sorted(built_with))}, but the server now uses "
+                f"{self.embedder.name}. Run `rag-mcp ingest --rebuild`."
+            )
+        return None
+
     def ingest(self, rebuild: bool = False) -> IngestReport:
+        """Index new and changed files. Raises IndexBusy if another process is writing."""
+        if not self.settings.docs_dir.exists():
+            raise FileNotFoundError(f"Documents directory does not exist: {self.settings.docs_dir}")
+        # Write through a separate store, so searches on self.store never see a half-applied
+        # update; self.store picks the commit up from disk on its next read. The in-process
+        # Qdrant used by tests cannot be shared that way, so it writes in place.
+        writer = self.store if self.store.in_memory else self._open_store()
+        try:
+            with writer.write_lock():
+                writer.reload()  # another process may have committed since we opened it
+                return self._ingest(writer, rebuild)
+        finally:
+            if writer is not self.store:
+                writer.close()
+
+    def _ingest(self, store: HybridStore, rebuild: bool) -> IngestReport:
         s = self.settings
         report = IngestReport()
-        if not s.docs_dir.exists():
-            raise FileNotFoundError(f"Documents directory does not exist: {s.docs_dir}")
         if rebuild:
-            self.store.reset()
-        manifest = self.store.manifest()
+            store.reset()
+        manifest = store.manifest()
         docs = {k: v for k, v in manifest.items() if k != "_meta"}
         if docs and any(m.get("embedder") not in (None, self.embedder.name) for m in docs.values()):
             raise RuntimeError(
@@ -78,11 +125,11 @@ class Pipeline:
                 doc = load_document(path, s.docs_dir)
                 chunks = chunk_document(doc, s.chunk_size, s.chunk_overlap)
                 if prev:
-                    self.store.delete_document(doc_id)
+                    store.delete_document(doc_id)
                     report.updated += 1
                 else:
                     report.added += 1
-                self.store.upsert_chunks(chunks)
+                store.upsert_chunks(chunks)
                 manifest[doc_id] = {
                     "source": source,
                     "content_hash": content_hash,
@@ -96,12 +143,11 @@ class Pipeline:
                 log.warning("failed %s: %s", source, e)
 
         for doc_id in [d for d in manifest if d != "_meta" and d not in seen]:
-            self.store.delete_document(doc_id)
+            store.delete_document(doc_id)
             del manifest[doc_id]
             report.removed += 1
 
-        self.store.commit()
-        self.store.save_manifest(manifest)
+        store.commit(manifest)
         return report
 
     def search(
@@ -159,7 +205,7 @@ class Pipeline:
         return {
             "docs_dir": str(s.docs_dir),
             "index_dir": str(s.index_dir),
-            "qdrant": s.qdrant_url or "embedded",
+            "vector_store": s.qdrant_url or "local (vectors.npy)",
             "embedder": self.embedder.name,
             "documents": sum(1 for k in self.store.manifest() if k != "_meta"),
             "chunks": self.store.count(),

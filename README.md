@@ -3,7 +3,7 @@
 [![CI](https://github.com/ZizzX/rag-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ZizzX/rag-mcp/actions/workflows/ci.yml)
 
 Локальный RAG по вашим Markdown и PDF, доступный любому агенту через MCP
-(Claude Code, Claude Desktop, Cursor). Гибридный поиск: векторный (Qdrant) +
+(Claude Code, Claude Desktop, Cursor). Гибридный поиск: векторный (numpy, по желанию Qdrant) +
 BM25, слияние через RRF. Эмбеддинги через Ollama по умолчанию, без облака.
 
 Работает на Windows, macOS и Linux. Один и тот же репозиторий на всех машинах,
@@ -38,10 +38,14 @@ uv run rag-mcp status
 - [Ollama](https://ollama.com) запущен (для эмбеддингов). Модель по умолчанию
   `nomic-embed-text`; для русского лучше `bge-m3`: `ollama pull bge-m3` и
   `RAG_EMBED_MODEL=bge-m3` в `.env`.
-- Docker Desktop не обязателен. Qdrant по умолчанию работает встроенно
-  (папка `data/index`). Сервер Qdrant нужен для больших корпусов или если
-  индекс читают несколько процессов: `docker compose up -d` и
-  `RAG_QDRANT_URL=http://localhost:6333`.
+- Docker Desktop не обязателен. Индекс по умолчанию это обычные файлы в
+  `data/index` (`manifest.json`, `bm25.json`, `vectors.npy`), векторный поиск
+  полным перебором через numpy. Индекс одновременно читают сколько угодно
+  процессов: каждая сессия Claude Code, Claude Desktop или Cursor запускает свой
+  `rag-mcp serve`, и все они работают, в том числе пока идёт `ingest`. Пишет
+  один процесс за раз (блокировка `index.lock` только на время записи).
+- Сервер Qdrant нужен только для очень больших корпусов (сотни тысяч чанков):
+  `docker compose up -d` и `RAG_QDRANT_URL=http://localhost:6333`.
 
 ## Команды
 
@@ -53,7 +57,14 @@ uv run rag-mcp status
 | `rag-mcp status` | где документы и индекс, какой эмбеддер, сколько чанков |
 | `rag-mcp eval [eval/questions.jsonl] [-k N]` | hit-rate и MRR по золотому набору вопросов |
 
-Инструменты MCP: `search` (параметры `project`, `source_prefix`, `all_projects`), `fetch_document`, `list_sources`, `index_status`.
+Инструменты MCP: `search` (параметры `project`, `source_prefix`, `all_projects`), `fetch_document`, `list_sources`, `index_status`, `reindex` (инкрементальный ingest, `rebuild=true` для полной пересборки).
+
+Индекс обновляется сам: при старте сервер в фоне индексирует файлы, добавленные,
+изменённые или удалённые с прошлого ingest. Добавили документ во время работы:
+попросите агента вызвать `reindex` или выполните `rag-mcp ingest`, остальные
+серверы подхватят изменения при следующем запросе. Если Ollama не запущена,
+индекс пуст или сменилась модель эмбеддингов, инструменты возвращают текст с
+тем, что сделать, а не «Error executing tool».
 
 ## Конфигурация
 
@@ -159,7 +170,7 @@ src/rag_mcp/
   loaders.py    Markdown и PDF (PyMuPDF) -> Document
   chunking.py   разбиение по заголовкам, затем окна с перекрытием
   embeddings.py Ollama / OpenAI-совместимый API / hash (тесты)
-  store.py      Qdrant (embedded или сервер) + BM25 + RRF
+  store.py      векторы (vectors.npy или сервер Qdrant) + BM25 + RRF
   pipeline.py   инкрементальный ингест и поиск
   server.py     MCP-сервер (stdio)
   evaluate.py   hit-rate и MRR по eval/questions.jsonl
