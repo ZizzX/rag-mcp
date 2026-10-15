@@ -1,12 +1,13 @@
 [project]
 name = "rag-mcp"
 version = "0.1.0"
-description = "Local RAG over Markdown and PDF, exposed as an MCP server (hybrid search: Qdrant dense + BM25)."
+description = "Local RAG over Markdown and PDF, exposed as an MCP server (hybrid search: dense vectors + BM25)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "mcp>=1.10",
+    "numpy>=1.26",
     "qdrant-client>=1.12",
     "pymupdf>=1.24",
     "rank-bm25>=0.2.2",

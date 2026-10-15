@@ -12,15 +12,21 @@ or an explicit `source_prefix` to override.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import logging
 import os
+import threading
 import warnings
+from dataclasses import asdict
 from urllib.parse import unquote, urlparse
 
+import httpx
 from mcp.server.mcpserver import Context, MCPServer
 
 from .pipeline import Pipeline, configure_logging
+from .store import IndexBusy
 
 log = logging.getLogger("rag_mcp.server")
 
@@ -30,18 +36,63 @@ INSTRUCTIONS = (
     "client is currently working in (based on its workspace folder) plus shared docs; the "
     "response says which scope was used. Cite `source` (and `page` when present) in answers. "
     "Use `fetch_document` when a passage is cut off. Use `index_status` to see indexed projects "
-    "and the detected one; pass `all_projects=true` to search everything."
+    "and the detected one; pass `all_projects=true` to search everything. Call `reindex` after "
+    "the user adds or edits documents."
 )
 
 server = MCPServer("rag-mcp", instructions=INSTRUCTIONS)
 _pipeline: Pipeline | None = None
+_pipeline_lock = threading.Lock()
 
 
 def pipeline() -> Pipeline:
     global _pipeline
-    if _pipeline is None:
-        _pipeline = Pipeline()
-    return _pipeline
+    with _pipeline_lock:
+        if _pipeline is None:
+            _pipeline = Pipeline()
+        return _pipeline
+
+
+def error_text(e: Exception) -> str:
+    """Turn an exception into a message the user can act on (MCP clients show bare errors otherwise)."""
+    s = _pipeline.settings if _pipeline is not None else None
+    if isinstance(e, httpx.ConnectError | httpx.TimeoutException):
+        where = s.ollama_url if s and s.embed_provider == "ollama" else "the embedding server"
+        msg = f"Cannot reach the embedding model at {where} ({e})."
+        if s is None or s.embed_provider == "ollama":
+            msg += " Start Ollama (`ollama serve`, or open the Ollama app) and try again."
+    elif isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404 and s and s.embed_provider == "ollama":
+        msg = f"Ollama does not have the model {s.embed_model}. Run `ollama pull {s.embed_model}`."
+    elif isinstance(e, httpx.HTTPStatusError):
+        msg = f"The embedding server answered {e.response.status_code}: {e.response.text[:200]}"
+    else:
+        msg = str(e) or type(e).__name__
+    return json.dumps({"error": msg}, ensure_ascii=False)
+
+
+def readable_errors(fn):
+    """Return errors as tool output instead of raising: clients show raised errors as just "Error executing tool"."""
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as e:
+                log.warning("%s failed: %s", fn.__name__, e)
+                return error_text(e)
+
+        return wrapper
+
+    @functools.wraps(fn)
+    def sync_wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            log.warning("%s failed: %s", fn.__name__, e)
+            return error_text(e)
+
+    return sync_wrapper
 
 
 def _root_to_path(uri: str) -> str | None:
@@ -106,6 +157,7 @@ async def resolve_scope(
 
 
 @server.tool()
+@readable_errors
 async def search(
     query: str,
     top_k: int = 6,
@@ -125,6 +177,9 @@ async def search(
         all_projects: Search every indexed project instead of only the current one plus shared folders.
     """
     top_k = max(1, min(int(top_k), 20))
+    problem = pipeline().index_problem()
+    if problem:
+        return json.dumps({"error": problem}, ensure_ascii=False)
     scope = await resolve_scope(ctx, source_prefix or None, all_projects, project)
     results = pipeline().search(query, top_k=top_k, source_prefixes=scope["prefixes"])
     slim = [
@@ -146,6 +201,7 @@ async def search(
 
 
 @server.tool()
+@readable_errors
 def fetch_document(doc_id: str) -> str:
     """Return the full text of one indexed document by its doc_id (from search results)."""
     doc = pipeline().document(doc_id)
@@ -155,6 +211,7 @@ def fetch_document(doc_id: str) -> str:
 
 
 @server.tool()
+@readable_errors
 def list_sources(project: str | None = None) -> str:
     """List indexed files with titles and chunk counts, optionally only for one project folder."""
     sources = pipeline().store.sources()
@@ -164,6 +221,7 @@ def list_sources(project: str | None = None) -> str:
 
 
 @server.tool()
+@readable_errors
 async def index_status(ctx: Context = None) -> str:  # type: ignore[assignment]
     """Show indexed projects, the project detected for the current workspace, embedder and counts."""
     pipe = pipeline()
@@ -174,8 +232,36 @@ async def index_status(ctx: Context = None) -> str:  # type: ignore[assignment]
     return json.dumps(status, ensure_ascii=False, indent=1)
 
 
+@server.tool()
+@readable_errors
+def reindex(rebuild: bool = False) -> str:
+    """Index documents added, changed or removed since the last ingest. Searches keep working meanwhile.
+
+    Args:
+        rebuild: Drop the index and re-embed everything (needed after changing the embedding model).
+    """
+    pipe = pipeline()
+    report = pipe.ingest(rebuild=rebuild)
+    return json.dumps({**asdict(report), "total_chunks": pipe.store.count()}, ensure_ascii=False, indent=1)
+
+
+def startup_ingest() -> None:
+    """Bring the index up to date when documents changed while no server was running."""
+    try:
+        pipe = pipeline()
+        if pipe.needs_ingest():
+            r = pipe.ingest()
+            log.info("startup ingest: added=%d updated=%d removed=%d errors=%d", r.added, r.updated, r.removed, len(r.errors))
+    except IndexBusy:
+        log.info("startup ingest skipped: another rag-mcp process is updating the index")
+    except Exception as e:
+        log.warning("startup ingest failed: %s", e)
+
+
 def run() -> None:
     configure_logging()
+    # In the background, so the client gets its tools immediately; searches see the result once it commits.
+    threading.Thread(target=startup_ingest, name="startup-ingest", daemon=True).start()
     server.run(transport="stdio")
 
 

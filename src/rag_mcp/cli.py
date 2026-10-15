@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import PROJECT_ROOT
 from .pipeline import Pipeline, configure_logging
+from .store import IndexBusy
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,7 +46,11 @@ def main(argv: list[str] | None = None) -> int:
 
     pipe = Pipeline()
     if args.cmd == "ingest":
-        r = pipe.ingest(rebuild=args.rebuild)
+        try:
+            r = pipe.ingest(rebuild=args.rebuild)
+        except IndexBusy as e:
+            print(e, file=sys.stderr)
+            return 1
         print(
             f"added={r.added} updated={r.updated} removed={r.removed} unchanged={r.unchanged} "
             f"chunks_written={r.chunks} total_chunks={pipe.store.count()}"

@@ -32,7 +32,8 @@ class Settings(BaseSettings):
     index_dir: Path = Field(default=PROJECT_ROOT / "data" / "index")
     collection: str = "docs"
 
-    # Vector store: embedded Qdrant (no server needed) or a Qdrant server URL.
+    # Vector store: empty = files in index_dir (vectors.npy), shared by any number of
+    # processes; or a Qdrant server URL for very large corpora.
     # With Docker Desktop: `docker compose up -d` and set RAG_QDRANT_URL=http://localhost:6333
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
