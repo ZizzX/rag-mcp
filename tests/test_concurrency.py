@@ -67,6 +67,25 @@ def test_needs_ingest_sees_changes_that_keep_an_old_mtime(workspace):
     assert pipe.ingest().updated == 1
     assert pipe.needs_ingest() is False
 
+    # same size, same mtime, different bytes, moved into place as a new file (tar, an editor's safe save)
+    st = target.stat()
+    swap = docs.parent / "swap.md"
+    swap.write_text("# Onboarding\n\nBadges are issued at the FRONT DESK.", encoding="utf-8")
+    os.utime(swap, ns=(st.st_atime_ns, st.st_mtime_ns))
+    os.replace(swap, target)
+    assert target.stat().st_size == st.st_size and target.stat().st_mtime_ns == st.st_mtime_ns
+    assert pipe.needs_ingest() is True
+    assert pipe.ingest().updated == 1
+    assert pipe.needs_ingest() is False
+
+    if os.name != "nt":  # the same, overwritten in place (cp -p); Windows: see the note in pipeline._stat
+        st = target.stat()
+        target.write_text("# Onboarding\n\nBadges are issued at the front desk.", encoding="utf-8")
+        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert pipe.needs_ingest() is True
+        assert pipe.ingest().updated == 1
+        assert pipe.needs_ingest() is False
+
     target.rename(docs / "welcome.md")  # same number of files, the new name has the old mtime
     assert pipe.needs_ingest() is True
     pipe.ingest()

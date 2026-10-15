@@ -60,7 +60,7 @@ class Pipeline:
         files = list(iter_files(s.docs_dir))
         if len(files) != len(docs):
             return True
-        # Compare size and mtime with what the last ingest saw (like rsync's quick check), not with
+        # Compare each file with what the last ingest saw (see _stat), not with
         # the manifest's own mtime: a file copied with `cp -p` or unpacked keeps an old mtime.
         for path in files:
             entry = docs.get(doc_id_for(path.relative_to(s.docs_dir).as_posix()))
@@ -227,8 +227,13 @@ class Pipeline:
 
 
 def _stat(path: Path) -> list[int]:
+    """What `needs_ingest` compares, without reading the file. Size and mtime catch edits; ctime and
+    inode catch a replacement that kept both (cp -p, unpacking an archive): setting an mtime moves
+    ctime, and a file moved into place is a new inode."""
     st = path.stat()
-    return [st.st_size, st.st_mtime_ns]
+    # ponytail: on Windows st_ctime is the creation time, so an in-place overwrite there that keeps
+    # size and mtime still goes unnoticed; `reindex` picks it up. Hash every file if that ever matters.
+    return [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino]
 
 
 def configure_logging(verbose: bool = False) -> None:
