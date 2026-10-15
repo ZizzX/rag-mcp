@@ -23,6 +23,11 @@ def _normalise(v: list[float]) -> list[float]:
     return [x / n for x in v]
 
 
+def _timeout(seconds: float) -> httpx.Timeout:
+    # A dead host must fail fast so search can fall back to BM25; a slow model load may take long.
+    return httpx.Timeout(seconds, connect=3.0)
+
+
 class OllamaEmbedder:
     """Uses the local Ollama server. Pull a model first: `ollama pull nomic-embed-text`."""
 
@@ -30,7 +35,7 @@ class OllamaEmbedder:
         self.name = f"ollama:{model}"
         self.model = model
         self.batch_size = batch_size
-        self.client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
+        self.client = httpx.Client(base_url=base_url.rstrip("/"), timeout=_timeout(timeout))
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -52,7 +57,7 @@ class OpenAIEmbedder:
         self.client = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=timeout,
+            timeout=_timeout(timeout),
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:

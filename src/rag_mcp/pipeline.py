@@ -151,13 +151,18 @@ class Pipeline:
         return report
 
     def search(
-        self, query: str, top_k: int | None = None, source_prefixes: list[str] | None = None
+        self,
+        query: str,
+        top_k: int | None = None,
+        source_prefixes: list[str] | None = None,
+        dense_errors: list[Exception] | None = None,
     ) -> list[dict]:
         return self.store.search(
             query,
             top_k=top_k or self.settings.top_k,
             candidate_multiplier=self.settings.candidate_multiplier,
             source_prefixes=source_prefixes,
+            dense_errors=dense_errors,
         )
 
     # ---------- multi-project scoping ----------
