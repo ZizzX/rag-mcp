@@ -75,7 +75,9 @@ jobs:
                       names = sorted(t.name for t in (await s.list_tools()).tools)
                       assert names == ["fetch_document", "index_status", "list_sources", "search"], names
                       res = await s.call_tool("search", {"query": "phishing email", "top_k": 1})
-                      hit = json.loads(res.content[0].text)[0]
+                      out = json.loads(res.content[0].text)
+                      assert out["scope"]["mode"] == "all", out["scope"]
+                      hit = out["results"][0]
                       assert hit["source"] == "security-policy.pdf", hit
                       print("MCP ok:", names, "->", hit["source"], "p.", hit["page"])
           asyncio.run(main())
