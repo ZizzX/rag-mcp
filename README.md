@@ -10,7 +10,7 @@ BM25, слияние через RRF. Эмбеддинги через Ollama по
 ## Быстрый старт
 
 ```bash
-git clone <your-repo-url> rag-mcp && cd rag-mcp
+git clone https://github.com/ZizzX/rag-mcp.git && cd rag-mcp
 ./install.sh          # macOS / Linux
 .\install.ps1         # Windows (PowerShell)
 ```
@@ -85,25 +85,6 @@ uv run rag-mcp status
 вариант 1 или 2 выше). Если позже появятся сильно разные пайплайны, например
 отдельный для кода и отдельный для документов, их проще держать как разные
 конфиги `.env` и разные коллекции (`RAG_COLLECTION`), а не как разные репозитории.
-
-## Как перенести в отдельный репозиторий
-
-Сейчас проект лежит в подпапке `rag-mcp/` ветки `ccr-b9631f25-3m1yks`
-репозитория `javascript-questions`. Чтобы вынести его в собственный репозиторий
-с сохранением истории:
-
-```bash
-# в клоне javascript-questions
-git checkout ccr-b9631f25-3m1yks
-git subtree split --prefix=rag-mcp -b rag-mcp-only
-
-# новый пустой репозиторий на GitHub: zizzx/rag-mcp
-git push git@github.com:zizzx/rag-mcp.git rag-mcp-only:main
-git branch -D rag-mcp-only
-```
-
-После этого на любой машине: `git clone git@github.com:zizzx/rag-mcp.git` и
-установщик.
 
 ## Ручная регистрация MCP (другие клиенты)
 
