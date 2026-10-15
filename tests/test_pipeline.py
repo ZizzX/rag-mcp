@@ -32,7 +32,7 @@ def test_search_returns_sources_and_pages(pipeline):
 
 def test_source_prefix_filter(pipeline):
     pipeline.ingest()
-    res = pipeline.search("rollback", top_k=5, source_prefix="onboarding")
+    res = pipeline.search("rollback", top_k=5, source_prefixes=["onboarding"])
     assert all(r["source"].startswith("onboarding") for r in res)
 
 

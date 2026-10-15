@@ -108,6 +108,7 @@ class HybridStore:
         if self._remote:  # payload indexes only exist on a Qdrant server
             self.client.create_payload_index(self.collection, "doc_id", qm.PayloadSchemaType.KEYWORD)
             self.client.create_payload_index(self.collection, "source", qm.PayloadSchemaType.KEYWORD)
+            self.client.create_payload_index(self.collection, "project", qm.PayloadSchemaType.KEYWORD)
 
     def reset(self) -> None:
         if self.client.collection_exists(self.collection):
@@ -160,10 +161,23 @@ class HybridStore:
             entry["chunks"] += 1
         return dict(sorted(out.items()))
 
-    def search(self, query: str, top_k: int, candidate_multiplier: int = 4, source_prefix: str | None = None) -> list[dict]:
+    def projects(self) -> list[str]:
+        """Top-level folders present in the index (the multi-project layout)."""
+        return sorted({p["project"] for p in self._chunks.values() if p.get("project")})
+
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        candidate_multiplier: int = 4,
+        source_prefixes: list[str] | None = None,
+    ) -> list[dict]:
+        """Hybrid search. `source_prefixes` restricts results to sources starting with any of them
+        ("shop-backend/", "common/", "specs/api.pdf")."""
         n = max(top_k * candidate_multiplier, top_k)
-        dense = self._dense_search(query, n, source_prefix)
-        sparse = self._bm25_search(query, n, source_prefix)
+        prefixes = [p for p in (source_prefixes or []) if p] or None
+        dense = self._dense_search(query, n, prefixes)
+        sparse = self._bm25_search(query, n, prefixes)
         fused: dict[str, float] = {}
         for ranking in (dense, sparse):
             for rank, cid in enumerate(ranking):
@@ -177,17 +191,32 @@ class HybridStore:
             results.append(payload)
         return results
 
-    def _dense_search(self, query: str, n: int, source_prefix: str | None) -> list[str]:
+    @staticmethod
+    def _matches(source: str, prefixes: list[str] | None) -> bool:
+        return not prefixes or any(source.startswith(p) for p in prefixes)
+
+    def _dense_search(self, query: str, n: int, prefixes: list[str] | None) -> list[str]:
         if not self.client.collection_exists(self.collection):
             return []
         vector = self.embedder.embed([query])[0]
         flt = None
-        if source_prefix:
-            flt = qm.Filter(must=[qm.FieldCondition(key="source", match=qm.MatchText(text=source_prefix))])
-        res = self.client.query_points(self.collection, query=vector, limit=n, query_filter=flt, with_payload=["chunk_id"])
-        return [p.payload["chunk_id"] for p in res.points]
+        limit = n
+        if prefixes:
+            # Whole-project prefixes ("shop-backend/") map to an exact keyword filter on `project`,
+            # which works on both embedded and server Qdrant. Anything finer is filtered in Python
+            # after oversampling.
+            projects = [p.rstrip("/") for p in prefixes]
+            if all(p and "/" not in p for p in projects):
+                flt = qm.Filter(must=[qm.FieldCondition(key="project", match=qm.MatchAny(any=projects))])
+            else:
+                limit = n * 4
+        res = self.client.query_points(
+            self.collection, query=vector, limit=limit, query_filter=flt, with_payload=["chunk_id", "source"]
+        )
+        ids = [p.payload["chunk_id"] for p in res.points if self._matches(p.payload["source"], prefixes)]
+        return ids[:n]
 
-    def _bm25_search(self, query: str, n: int, source_prefix: str | None) -> list[str]:
+    def _bm25_search(self, query: str, n: int, prefixes: list[str] | None) -> list[str]:
         if self._bm25 is None:
             return []
         scores = self._bm25.get_scores(tokenize(query))
@@ -197,7 +226,7 @@ class HybridStore:
             if scores[i] <= 0:
                 break
             cid = self._bm25_ids[i]
-            if source_prefix and not self._chunks[cid]["source"].startswith(source_prefix):
+            if not self._matches(self._chunks[cid]["source"], prefixes):
                 continue
             out.append(cid)
             if len(out) >= n:

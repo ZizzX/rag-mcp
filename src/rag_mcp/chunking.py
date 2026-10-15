@@ -24,6 +24,7 @@ class Chunk:
     title: str
     text: str
     heading: str = ""  # "Section > Subsection"
+    project: str = ""  # first path component of `source` ("" for files in the docs root)
     page: int | None = None
     index: int = 0
     metadata: dict = field(default_factory=dict)
@@ -83,6 +84,11 @@ def _best_break(text: str, lo: int, hi: int) -> int:
     return hi
 
 
+def project_of(source: str) -> str:
+    """'shop-backend/specs/api.pdf' -> 'shop-backend'; 'notes.md' -> ''."""
+    return source.split("/", 1)[0] if "/" in source else ""
+
+
 def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
     chunks: list[Chunk] = []
     counter = 0
@@ -98,6 +104,7 @@ def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
                         title=doc.title,
                         text=piece,
                         heading=heading,
+                        project=project_of(doc.source),
                         page=page.page_number,
                         index=counter,
                     )

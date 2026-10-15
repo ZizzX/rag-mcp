@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     chunk_size: int = 1800
     chunk_overlap: int = 200
 
+    # Multi-project layout: docs_dir/<project>/... where <project> is the name of the
+    # project folder on disk. `search` auto-detects the current project from the MCP
+    # client's workspace roots and scopes results to it plus these shared folders.
+    shared_projects: list[str] = Field(default=["common"])
+    # Force a project (skips auto-detection). Mostly for tests and scripts.
+    project: str | None = None
+
     # Retrieval
     top_k: int = 6
     candidate_multiplier: int = 4  # how many candidates each retriever returns before fusion

@@ -22,7 +22,9 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("search", help="query the index from the terminal")
     s.add_argument("query")
     s.add_argument("-k", "--top-k", type=int, default=None)
-    s.add_argument("--source", default=None, help="restrict to sources starting with this prefix")
+    s.add_argument("--source", action="append", default=None, metavar="PREFIX",
+                   help="restrict to sources starting with PREFIX (repeatable)")
+    s.add_argument("--project", default=None, help="scope to this project folder plus shared folders")
     s.add_argument("--json", action="store_true")
 
     sub.add_parser("serve", help="run the MCP server on stdio")
@@ -53,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if r.errors else 0
 
     if args.cmd == "search":
-        results = pipe.search(args.query, top_k=args.top_k, source_prefix=args.source)
+        prefixes = args.source or pipe.scope_for(args.project)
+        results = pipe.search(args.query, top_k=args.top_k, source_prefixes=prefixes)
         if args.json:
             print(json.dumps(results, ensure_ascii=False, indent=1))
         else:
