@@ -171,6 +171,7 @@ async def search(
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Hybrid search (vector + BM25) over the indexed documents, scoped to the current project.
+    If the embedding model is down, results come from BM25 only and the response has a `degraded` field saying why.
 
     Args:
         query: Natural-language question or keywords.
@@ -205,7 +206,10 @@ async def search(
     out = {"scope": scope, "results": slim}
     if dense_errors:
         log.warning("search without vectors: %s", dense_errors[0])
-        out["degraded"] = f"dense off: {error_message(dense_errors[0])} Results come from keyword (BM25) search only."
+        out["degraded"] = (
+            f"dense off: {error_message(dense_errors[0])} Until then, results come from keyword (BM25) "
+            "search only, so an empty or weak result does not mean the documents lack the answer."
+        )
     return json.dumps(out, ensure_ascii=False, indent=1)
 
 

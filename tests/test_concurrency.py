@@ -98,6 +98,28 @@ async def test_search_falls_back_to_bm25_when_ollama_is_down(workspace, monkeypa
     assert "ollama serve" in payload["degraded"] and pipe.settings.ollama_url in payload["degraded"]
 
 
+def test_only_an_unreachable_embedder_falls_back_and_only_when_asked(workspace, monkeypatch):
+    docs, index = workspace
+    pipe = Pipeline(_local_settings(docs, index))
+    pipe.ingest()
+    error = httpx.ConnectError("Connection refused")
+
+    def fail(texts):
+        raise error
+
+    monkeypatch.setattr(pipe.store.embedder, "embed", fail)
+    with pytest.raises(httpx.ConnectError):  # CLI and evaluate pass no list: they still see the failure
+        pipe.search("VPN")
+    collected: list[Exception] = []
+    assert pipe.search("VPN", dense_errors=collected)
+    assert collected == [error]
+
+    request = httpx.Request("POST", "http://localhost:11434/api/embed")
+    error = httpx.HTTPStatusError("not found", request=request, response=httpx.Response(404, request=request))
+    with pytest.raises(httpx.HTTPStatusError):  # a missing model is a config error, not an outage
+        pipe.search("VPN", dense_errors=[])
+
+
 @pytest.mark.anyio
 async def test_search_on_empty_index_says_what_to_do(workspace, monkeypatch):
     docs, index = workspace

@@ -285,13 +285,14 @@ class HybridStore:
     ) -> list[dict]:
         """Hybrid search. `source_prefixes` restricts results to sources starting with any of them
         ("shop-backend/", "common/", "specs/api.pdf"). With `dense_errors`, an unreachable embedder
-        is appended there and the search runs on BM25 alone instead of raising."""
+        (connection refused or timed out) is appended there and the search runs on BM25 alone instead
+        of raising. Other embedder errors (bad API key, missing model) still raise: they need a fix."""
         self._refresh()
         n = max(top_k * candidate_multiplier, top_k)
         prefixes = [p for p in (source_prefixes or []) if p] or None
         try:
             dense = self._dense_search(query, n, prefixes)
-        except httpx.HTTPError as e:
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
             if dense_errors is None:
                 raise
             dense_errors.append(e)

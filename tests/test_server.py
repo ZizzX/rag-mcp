@@ -30,6 +30,7 @@ async def test_search_tool_roundtrip():
     payload = json.loads(result.content[0].text)
     # example docs have no project folders, so the workspace cannot match: falls back to "all"
     assert payload["scope"]["mode"] == "all"
+    assert "degraded" not in payload
     hit = payload["results"][0]
     assert hit["source"] == "onboarding.md"
     assert set(hit) >= {"source", "project", "heading", "page", "doc_id", "text"}
