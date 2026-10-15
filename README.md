@@ -42,6 +42,8 @@ uv run rag-mcp status
   (папка `data/index`). Сервер Qdrant нужен для больших корпусов или если
   индекс читают несколько процессов: `docker compose up -d` и
   `RAG_QDRANT_URL=http://localhost:6333`.
+  Встроенный индекс открывает только один процесс: пока запущен MCP-сервер
+  (`rag-mcp serve`), `rag-mcp ingest` сообщит, что индекс заблокирован.
 
 ## Команды
 

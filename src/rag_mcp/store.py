@@ -52,7 +52,16 @@ class HybridStore:
         elif self._remote:
             self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
         else:
-            self.client = QdrantClient(path=str(index_dir / "qdrant"))
+            try:
+                self.client = QdrantClient(path=str(index_dir / "qdrant"))
+            except RuntimeError as e:
+                if "already accessed" not in str(e):
+                    raise
+                # Embedded Qdrant allows one process per folder; SystemExit gives the CLI a clean message, no traceback.
+                raise SystemExit(
+                    f"rag-mcp: index {index_dir} is locked by another rag-mcp process (likely the MCP server "
+                    "`rag-mcp serve`). Stop/disable it, or run Qdrant via `docker compose up -d` with RAG_QDRANT_URL (see README)."
+                ) from None
         self._bm25_path = index_dir / "bm25.json"
         self._manifest_path = index_dir / "manifest.json"
         self._chunks: dict[str, dict] = {}  # chunk_id -> chunk payload (also feeds BM25)
