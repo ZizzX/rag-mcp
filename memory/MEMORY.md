@@ -1,1 +1,3 @@
 - [git push https fails](git-push-https-no-credentials.md) — "could not read Username for https://github.com": push to git@github.com:ZizzX/rag-mcp.git directly
+- [pm CLI from Bash](pm-cli-from-bash.md) — pm is a zsh alias: in Bash tool run `node <plugins>/project-memory/scripts/pm.mjs <cmd>`
+- [.env.example denied](env-example-denied.md) — any Bash call touching .env.example is denied whole; keep it separate, user edits it

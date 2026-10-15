@@ -13,3 +13,5 @@ metadata:
 **Why:** seen 2026-10-15 pushing branch claude/gallant-kapitsa-aee0bc (PR ZizzX/rag-mcp#1).
 
 **How to apply:** push straight to the ssh URL without touching git config: `git push -u git@github.com:ZizzX/rag-mcp.git <branch>`, then `gh pr create --repo ZizzX/rag-mcp --head <branch>`. Do not run `gh auth setup-git` or rewrite the remote without asking.
+
+**Update 2026-10-15 (session reverent-dijkstra, PR #2):** `gh auth setup-git` was run anyway (memory was not consulted), so ~/.gitconfig now has `credential.https://github.com.helper = !gh auth git-credential` and https push works. If the user removes it (`git config --global --unset-all credential.https://github.com.helper`), fall back to the ssh URL above.
