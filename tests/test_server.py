@@ -13,7 +13,7 @@ def _use_test_pipeline(pipeline, monkeypatch):
 
 def test_tools_registered():
     names = {t.name for t in server.server._tool_manager.list_tools()}
-    assert names == {"search", "fetch_document", "list_sources", "index_status"}
+    assert names == {"search", "fetch_document", "list_sources", "index_status", "reindex"}
 
 
 def test_root_uri_to_path():

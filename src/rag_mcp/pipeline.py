@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,8 +47,16 @@ class Pipeline:
             rrf_k=self.settings.rrf_k,
         )
         atexit.register(self.store.close)
+        # The MCP server searches from the event loop while the watcher thread re-indexes:
+        # one lock serialises both so a search never sees a half-updated BM25 corpus.
+        self._lock = threading.RLock()
+        self.watcher = None
 
     def ingest(self, rebuild: bool = False) -> IngestReport:
+        with self._lock:
+            return self._ingest(rebuild)
+
+    def _ingest(self, rebuild: bool) -> IngestReport:
         s = self.settings
         report = IngestReport()
         if not s.docs_dir.exists():
@@ -107,12 +116,27 @@ class Pipeline:
     def search(
         self, query: str, top_k: int | None = None, source_prefixes: list[str] | None = None
     ) -> list[dict]:
-        return self.store.search(
-            query,
-            top_k=top_k or self.settings.top_k,
-            candidate_multiplier=self.settings.candidate_multiplier,
-            source_prefixes=source_prefixes,
-        )
+        with self._lock:
+            return self.store.search(
+                query,
+                top_k=top_k or self.settings.top_k,
+                candidate_multiplier=self.settings.candidate_multiplier,
+                source_prefixes=source_prefixes,
+            )
+
+    # ---------- watch mode ----------
+    def start_watcher(self):
+        """Start re-indexing on file changes in a background thread (idempotent)."""
+        from .watcher import DocsWatcher
+
+        if self.watcher is None:
+            self.watcher = DocsWatcher(self.settings.docs_dir, self.ingest, self.settings.watch_debounce_ms).start()
+        return self.watcher
+
+    def stop_watcher(self) -> None:
+        if self.watcher is not None:
+            self.watcher.stop()
+            self.watcher = None
 
     # ---------- multi-project scoping ----------
     def detect_project(self, workspace_paths: list[str]) -> str | None:
@@ -165,6 +189,11 @@ class Pipeline:
             "chunks": self.store.count(),
             "projects": self.store.projects(),
             "shared_projects": self.settings.shared_projects,
+            "watch": {
+                "enabled": self.watcher is not None,
+                "runs": self.watcher.runs if self.watcher else 0,
+                "last_error": self.watcher.last_error if self.watcher else None,
+            },
         }
 
 

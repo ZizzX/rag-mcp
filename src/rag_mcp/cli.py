@@ -27,7 +27,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--project", default=None, help="scope to this project folder plus shared folders")
     s.add_argument("--json", action="store_true")
 
-    sub.add_parser("serve", help="run the MCP server on stdio")
+    sv = sub.add_parser("serve", help="run the MCP server on stdio (re-indexes on file changes unless --no-watch)")
+    sv.add_argument("--no-watch", action="store_true", help="do not watch docs_dir for changes")
+
+    sub.add_parser("watch", help="index now, then re-index whenever documents change (Ctrl+C to stop)")
     sub.add_parser("status", help="show index location, embedder and counts")
 
     e = sub.add_parser("eval", help="retrieval metrics against a golden question set")
@@ -40,10 +43,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         from .server import run
 
-        run()
+        run(watch=False if args.no_watch else None)
         return 0
 
     pipe = Pipeline()
+    if args.cmd == "watch":
+        import time
+
+        watcher = pipe.start_watcher()
+        print(f"watching {pipe.settings.docs_dir} (Ctrl+C to stop)", file=sys.stderr)
+        try:
+            while watcher.thread.is_alive():
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            pipe.stop_watcher()
+        return 1 if watcher.last_error else 0
+
     if args.cmd == "ingest":
         r = pipe.ingest(rebuild=args.rebuild)
         print(

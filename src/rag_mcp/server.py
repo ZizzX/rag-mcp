@@ -146,6 +146,21 @@ async def search(
 
 
 @server.tool()
+def reindex(rebuild: bool = False) -> str:
+    """Index new or changed documents now (the server also does this automatically when files change).
+
+    Args:
+        rebuild: Drop the index and re-embed everything. Needed after changing the embedding model.
+    """
+    r = pipeline().ingest(rebuild=rebuild)
+    return json.dumps(
+        {"added": r.added, "updated": r.updated, "removed": r.removed, "unchanged": r.unchanged,
+         "chunks_written": r.chunks, "errors": r.errors},
+        ensure_ascii=False,
+    )
+
+
+@server.tool()
 def fetch_document(doc_id: str) -> str:
     """Return the full text of one indexed document by its doc_id (from search results)."""
     doc = pipeline().document(doc_id)
@@ -174,9 +189,17 @@ async def index_status(ctx: Context = None) -> str:  # type: ignore[assignment]
     return json.dumps(status, ensure_ascii=False, indent=1)
 
 
-def run() -> None:
+def run(watch: bool | None = None) -> None:
+    """Serve on stdio. With watch (default from RAG_WATCH) the server catches up on changed
+    documents at start and re-indexes whenever files in docs_dir change."""
     configure_logging()
-    server.run(transport="stdio")
+    pipe = pipeline()
+    if pipe.settings.watch if watch is None else watch:
+        pipe.start_watcher()
+    try:
+        server.run(transport="stdio")
+    finally:
+        pipe.stop_watcher()
 
 
 if __name__ == "__main__":

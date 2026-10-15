@@ -73,7 +73,7 @@ jobs:
                   async with ClientSession(r, w) as s:
                       await s.initialize()
                       names = sorted(t.name for t in (await s.list_tools()).tools)
-                      assert names == ["fetch_document", "index_status", "list_sources", "search"], names
+                      assert names == ["fetch_document", "index_status", "list_sources", "reindex", "search"], names
                       res = await s.call_tool("search", {"query": "phishing email", "top_k": 1})
                       out = json.loads(res.content[0].text)
                       assert out["scope"]["mode"] == "all", out["scope"]
