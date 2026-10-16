@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from .loaders import SUPPORTED_SUFFIXES, _hidden
@@ -18,6 +19,8 @@ from .store import _atomic_write
 
 REGISTRY = "projects.json"
 SKIP_DIRS = {"node_modules", ".venv", "venv", "build", "dist", "target", "vendor", "__pycache__"}
+MAX_FILES = 5000  # more than this is usually a mistake (a home folder, a monorepo root); --force overrides
+NAME_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
 
 
 class ProjectError(ValueError):
@@ -133,3 +136,61 @@ def list_files(root: Path, skip: Path | None = None) -> tuple[list[Path], str | 
         and not (skip is not None and _inside(p, skip))
     ]
     return sorted(files), warning
+
+
+def resolve_project(
+    path: str | Path | None,
+    name: str | None,
+    *,
+    cwd: Path,
+    docs_dir: Path,
+    existing: dict[str, Project],
+    force: bool = False,
+) -> tuple[Project, list[Path]]:
+    """Check what `rag-mcp add` was asked for and describe the project it would connect.
+
+    No path means the git repository around `cwd` (or `cwd` itself outside git); no name means the
+    main repository's folder name, so `add` from a worktree still names the project after the repo.
+    Raises ProjectError with a message for the user when the folder cannot be connected.
+    """
+    if path is None:
+        target = repo_root(cwd) or Path(cwd).resolve()
+    else:
+        target = (Path(cwd) / path).resolve()
+    if not target.is_dir():
+        raise ProjectError(f"{target} is not a folder")
+    if not force and target in (Path.home().resolve(), Path(target.anchor)):
+        raise ProjectError(f"{target} is too broad to index (home folder or drive root); pass --force if you mean it")
+
+    common = git_common_dir(target)
+    if name is None:
+        if common is None:
+            name = target.name
+        else:
+            name = common.parent.name if common.name == ".git" else common.name.removesuffix(".git")
+    if not NAME_RE.match(name):
+        raise ProjectError(f"Invalid project name {name!r}: use letters, digits, '.', '_' or '-' (set it with --name)")
+
+    if _inside(target, docs_dir):
+        raise ProjectError(f"{target} is inside docs_dir ({docs_dir}); its files are indexed from there already")
+    if (docs_dir / name).is_dir():
+        raise ProjectError(f"The name {name!r} is taken by the folder {docs_dir / name}; choose another with --name")
+    same = existing.get(name)
+    if same is not None and _key(same.path) != _key(target):
+        raise ProjectError(f"The name {name!r} is taken by the project at {same.path}; choose another with --name")
+    for other in existing.values():
+        if other.name == name:
+            continue
+        if _key(other.path) == _key(target):
+            raise ProjectError(f"{target} is already connected as {other.name!r}")
+        if _inside(target, other.path) or _inside(other.path, target):
+            raise ProjectError(
+                f"{target} overlaps the project {other.name!r} at {other.path}; nested projects are not "
+                f"supported, run `rag-mcp remove {other.name}` first"
+            )
+
+    files, _ = list_files(target, skip=docs_dir)
+    if len(files) > MAX_FILES and not force:
+        raise ProjectError(f"{len(files)} documents, more than {MAX_FILES}; pass --force to connect anyway")
+    project = Project(name, target, origin_of(target) if common else None, common, date.today().isoformat())
+    return project, files

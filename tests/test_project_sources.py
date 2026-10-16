@@ -1,10 +1,15 @@
 """Connected project folders: registry, file listing, indexing and the CLI (T-014)."""
 
+import os
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from rag_mcp import projects
 from rag_mcp.projects import (
     Project,
+    ProjectError,
     RegistryError,
     git_common_dir,
     list_files,
@@ -12,6 +17,7 @@ from rag_mcp.projects import (
     normalize_origin,
     origin_of,
     repo_root,
+    resolve_project,
     save_projects,
 )
 
@@ -91,3 +97,83 @@ def test_list_files_skips_subtree(tmp_path):
         (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / f).write_text("x")
     assert rel(list_files(tmp_path, skip=tmp_path / "data/docs")[0], tmp_path) == ["a.md"]
+
+
+def test_default_path_is_repo_root_and_name_is_main_repo(make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"docs/a.md": "x"}, origin="git@github.com:Acme/shop.git")
+    wt = tmp_path / "ATS-3010"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(wt)], check=True, capture_output=True)
+    p, files = resolve_project(None, None, cwd=wt / "docs", docs_dir=tmp_path / "d", existing={})
+    assert p.name == "shop" and p.path == wt.resolve() and p.origin == "github.com/acme/shop"
+    assert p.git_dir == (repo / ".git").resolve() and len(files) == 1
+
+
+def test_explicit_subfolder_and_name(make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"docs/a.md": "x", "README.md": "x"})
+    p, files = resolve_project("docs", "shop-docs", cwd=repo, docs_dir=tmp_path / "d", existing={})
+    assert p.path == (repo / "docs").resolve() and p.name == "shop-docs" and len(files) == 1
+
+
+def test_non_git_folder(tmp_path):
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes/a.md").write_text("x")
+    p, _ = resolve_project(tmp_path / "notes", None, cwd=tmp_path, docs_dir=tmp_path / "d", existing={})
+    assert (p.name, p.origin, p.git_dir) == ("notes", None, None)
+
+
+@pytest.mark.parametrize("bad", [".hidden", "a/b", "x y"])
+def test_invalid_name(tmp_path, bad):
+    with pytest.raises(ProjectError, match="name"):
+        resolve_project(tmp_path, bad, cwd=tmp_path, docs_dir=tmp_path / "d", existing={})
+
+
+@pytest.mark.parametrize("case, match", [
+    ("name_taken_by_folder", "taken"),
+    ("name_taken_by_project", "taken"),
+    ("inside_project", "nested"),
+    ("contains_project", "nested"),
+    ("same_path_via_symlink", "already connected"),
+    ("inside_docs_dir", "docs_dir"),
+    ("home", "too broad"),
+    ("missing", "not a folder"),
+])
+def test_refusals(tmp_path, case, match):
+    docs_dir = tmp_path / "docs"
+    (docs_dir / "shop").mkdir(parents=True)
+    for d in ("x", "other/sub"):
+        (tmp_path / d).mkdir(parents=True)
+    existing = {"other": Project("other", (tmp_path / "other").resolve(), None, None, "2026-10-16")}
+    if case == "same_path_via_symlink":
+        try:
+            os.symlink(tmp_path / "other", tmp_path / "link", target_is_directory=True)
+        except OSError:
+            pytest.skip("cannot create symlinks here")
+    path, name = {
+        "name_taken_by_folder": (tmp_path / "x", "shop"),
+        "name_taken_by_project": (tmp_path / "x", "other"),
+        "inside_project": (tmp_path / "other/sub", "y"),
+        "contains_project": (tmp_path, "y"),
+        "same_path_via_symlink": (tmp_path / "link", "y"),
+        "inside_docs_dir": (docs_dir / "shop", "y"),
+        "home": (Path.home(), "y"),
+        "missing": (tmp_path / "absent", "y"),
+    }[case]
+    with pytest.raises(ProjectError, match=match):
+        resolve_project(path, name, cwd=tmp_path, docs_dir=docs_dir, existing=existing)
+
+
+def test_file_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(projects, "MAX_FILES", 2)
+    for n in range(3):
+        (tmp_path / f"{n}.md").write_text("x")
+    with pytest.raises(ProjectError, match="3 documents"):
+        resolve_project(tmp_path, "x", cwd=tmp_path, docs_dir=tmp_path / "d", existing={})
+    _, files = resolve_project(tmp_path, "x", cwd=tmp_path, docs_dir=tmp_path / "d", existing={}, force=True)
+    assert len(files) == 3
+
+
+def test_same_path_same_name_is_an_update(tmp_path):
+    (tmp_path / "x").mkdir()
+    old = Project("x", (tmp_path / "x").resolve(), None, None, "2020-01-01")
+    p, _ = resolve_project(tmp_path / "x", "x", cwd=tmp_path, docs_dir=tmp_path / "d", existing={"x": old})
+    assert p.name == "x" and p.path == old.path
