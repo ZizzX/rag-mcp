@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,20 +40,23 @@ class SourceScan:
     """Every document the index should hold right now, and what could not be looked at."""
 
     files: list[tuple[Path, str]] = field(default_factory=list)  # (file, source)
-    missing: list[str] = field(default_factory=list)  # connected projects whose folder is gone
+    missing: list[str] = field(default_factory=list)  # connected projects whose folder cannot be read
     warnings: list[str] = field(default_factory=list)
     projects: dict[str, Project] = field(default_factory=dict)
     docs_dir_found: bool = True
 
-    def kept_sources(self) -> tuple[str, ...]:
-        """Source prefixes whose documents stay in the index although their folder is unreachable."""
-        return tuple(f"{name}/" for name in self.missing)
+    def owner(self, source: str) -> str | None:
+        """The connected project a source belongs to; None for documents of docs_dir."""
+        top = source.split("/", 1)[0] if "/" in source else ""
+        return top if top in self.projects else None
 
-    def is_kept(self, source: str) -> bool:
-        if source.startswith(self.kept_sources()):
-            return True
-        # docs_dir itself is gone (unmounted drive, wrong RAG_DOCS_DIR): keep its documents too
-        return not self.docs_dir_found and source.split("/", 1)[0] not in self.projects
+    def is_kept(self, entry: dict) -> bool:
+        """A manifest entry stays although no file was seen for it: its folder is unreachable.
+        Entries carry `project` when they come from a connected project (see _ingest)."""
+        owner = entry.get("project")
+        if owner is not None:
+            return owner in self.missing
+        return not self.docs_dir_found  # unmounted drive, wrong RAG_DOCS_DIR
 
 
 class Pipeline:
@@ -78,9 +82,21 @@ class Pipeline:
         s = self.settings
         out = SourceScan(projects=load_projects(s.index_dir), docs_dir_found=s.docs_dir.is_dir())
         if out.docs_dir_found:
-            out.files += [(p, p.relative_to(s.docs_dir).as_posix()) for p in iter_files(s.docs_dir)]
+            shadowed: set[str] = set()
+            for p in iter_files(s.docs_dir):
+                source = p.relative_to(s.docs_dir).as_posix()
+                if out.owner(source):  # data/docs/<name>/ next to a connected project <name>
+                    shadowed.add(out.owner(source))
+                    continue
+                out.files.append((p, source))
+            out.warnings += [
+                f"{s.docs_dir / name} is shadowed by the connected project {name}; rename one of them"
+                for name in sorted(shadowed)
+            ]
         for project in out.projects.values():
-            if not project.path.is_dir():
+            try:
+                os.scandir(project.path).close()  # gone, not a folder, or not readable (macOS privacy rules)
+            except OSError:
                 out.missing.append(project.name)
                 continue
             files, warning = list_files(project.path, skip=s.docs_dir)
@@ -95,9 +111,7 @@ class Pipeline:
             scan = self.scan()
         except RegistryError:
             return False  # ingest would refuse anyway; searching what is indexed still works
-        docs = {
-            k: v for k, v in self.store.manifest().items() if k != "_meta" and not scan.is_kept(v.get("source", ""))
-        }
+        docs = {k: v for k, v in self.store.manifest().items() if k != "_meta" and not scan.is_kept(v)}
         if len(scan.files) != len(docs):
             return True
         # Compare each file with what the last ingest saw (see _stat), not with
@@ -126,8 +140,9 @@ class Pipeline:
 
     def ingest(self, rebuild: bool = False) -> IngestReport:
         """Index new and changed files. Raises IndexBusy if another process is writing."""
-        if not self.settings.docs_dir.exists() and not load_projects(self.settings.index_dir):
-            raise FileNotFoundError(f"Documents directory does not exist: {self.settings.docs_dir}")
+        s = self.settings
+        if not s.docs_dir.exists() and not load_projects(s.index_dir) and not self._indexed_documents():
+            raise FileNotFoundError(f"Documents directory does not exist: {s.docs_dir}")
         # Write through a separate store, so searches on self.store never see a half-applied
         # update; self.store picks the commit up from disk on its next read. The in-process
         # Qdrant used by tests cannot be shared that way, so it writes in place.
@@ -145,6 +160,15 @@ class Pipeline:
         report = IngestReport()
         scan = self.scan()  # first: a broken projects.json must stop us before anything changes
         if rebuild:
+            before = [m for k, m in store.manifest().items() if k != "_meta"]
+            lost = sorted({m["project"] for m in before if m.get("project") in scan.missing})
+            if not scan.docs_dir_found and any("project" not in m for m in before):
+                lost.append(str(s.docs_dir))
+            if lost:
+                raise ProjectError(
+                    f"--rebuild would drop the documents of {', '.join(lost)}: the folder cannot be read. "
+                    "Bring it back, or `rag-mcp remove` the project first"
+                )
             store.reset()
         manifest = store.manifest()
         docs = {k: v for k, v in manifest.items() if k != "_meta"}
@@ -156,13 +180,13 @@ class Pipeline:
             raise RuntimeError("Index format changed in this version of rag-mcp. Run `rag-mcp ingest --rebuild`.")
         manifest["_meta"] = {"schema": SCHEMA_VERSION}
 
-        seen: set[str] = {d for d, m in docs.items() if scan.is_kept(m.get("source", ""))}
+        seen: set[str] = {d for d, m in docs.items() if scan.is_kept(m)}
         for name in scan.missing:
             report.errors.append(
-                f"project {name}: folder not found ({scan.projects[name].path}); its documents stay in the index. "
-                f"Run `rag-mcp remove {name}`, or `rag-mcp add` it again from its new place"
+                f"project {name}: folder not found or not readable ({scan.projects[name].path}); its documents "
+                f"stay in the index. Run `rag-mcp remove {name}`, or `rag-mcp add` it again from its new place"
             )
-        if not scan.docs_dir_found:
+        if not scan.docs_dir_found and any("project" not in m for m in docs.values()):
             report.errors.append(f"{s.docs_dir} not found; its documents stay in the index")
         report.errors += scan.warnings
         for path, source in scan.files:
@@ -172,8 +196,11 @@ class Pipeline:
             try:
                 stat = _stat(path)
                 content_hash = file_hash(path)
+                owner = scan.owner(source)
                 if prev and prev.get("content_hash") == content_hash:
                     prev["stat"] = stat  # touched or copied back: same content, remember the new mtime
+                    if owner:
+                        prev["project"] = owner
                     report.unchanged += 1
                     continue
                 doc = load_document(path, source)
@@ -190,6 +217,7 @@ class Pipeline:
                     "chunks": len(chunks),
                     "embedder": self.embedder.name,
                     "stat": stat,
+                    **({"project": owner} if owner else {}),
                 }
                 report.chunks += len(chunks)
                 log.info("indexed %s (%d chunks)", source, len(chunks))
@@ -259,6 +287,9 @@ class Pipeline:
             "chunks": len(chunks),
             "text": "\n\n".join(c["text"] for c in chunks),
         }
+
+    def _indexed_documents(self) -> bool:
+        return any(k != "_meta" for k in self.store.manifest())
 
     # ---------- connected projects ----------
     def add_project(

@@ -52,15 +52,18 @@ def normalize_origin(url: str) -> str:
     return u.rstrip("/").removesuffix(".git").rstrip("/").lower()
 
 
-def git(cwd: Path, *args: str) -> str | None:
-    """Run git in `cwd`; stdout, or None when git is missing, slow or fails."""
+def git(cwd: Path, *args: str, timeout: float = 2) -> str | None:
+    """Run git in `cwd`; stdout, or None when git is missing, slow or fails. The short default
+    timeout suits the quick lookups; listing a big repository passes a longer one."""
     try:
         r = subprocess.run(
-            ["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding="utf-8", timeout=2
+            ["git", "-C", str(cwd), *args],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
-    except (FileNotFoundError, NotADirectoryError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    return r.stdout.strip() if r.returncode == 0 else None
+    # only the line break: `-z` output may start with a file name that begins with a space
+    return r.stdout.rstrip("\r\n") if r.returncode == 0 else None
 
 
 def repo_root(path: Path) -> Path | None:
@@ -120,12 +123,12 @@ def list_files(root: Path, skip: Path | None = None) -> tuple[list[Path], str | 
     walk without junk folders when `root` is not in a repository. The second value is a warning
     when git is there but could not list the files."""
     warning = None
-    out = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    out = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", timeout=60)
     if out is not None:
         candidates = [root / rel for rel in dict.fromkeys(out.split("\0")) if rel]
     else:
         if repo_root(root) is not None:
-            warning = f"git ls-files failed in {root}; indexed it without .gitignore"
+            warning = f"git ls-files failed or timed out in {root}; indexed it without .gitignore"
         candidates = []
         for folder, dirs, names in os.walk(root):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
@@ -176,7 +179,8 @@ def resolve_project(
     if (docs_dir / name).is_dir():
         raise ProjectError(f"The name {name!r} is taken by the folder {docs_dir / name}; choose another with --name")
     same = existing.get(name)
-    if same is not None and _key(same.path) != _key(target):
+    # a project whose old folder is gone is being added from its new place: that is a move
+    if same is not None and _key(same.path) != _key(target) and same.path.is_dir():
         raise ProjectError(f"The name {name!r} is taken by the project at {same.path}; choose another with --name")
     for other in existing.values():
         if other.name == name:

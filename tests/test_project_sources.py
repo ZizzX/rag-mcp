@@ -91,7 +91,7 @@ def test_list_files_without_git_skips_junk(tmp_path):
 def test_list_files_falls_back_with_warning(make_repo, tmp_path, monkeypatch):
     repo = make_repo(tmp_path / "r", {"a.md": "x", "node_modules/m.md": "x"})
     real = projects.git
-    monkeypatch.setattr(projects, "git", lambda cwd, *a: None if a[0] == "ls-files" else real(cwd, *a))  # "dubious ownership"
+    monkeypatch.setattr(projects, "git", lambda cwd, *a, **kw: None if a[0] == "ls-files" else real(cwd, *a, **kw))
     files, warning = list_files(repo)
     assert rel(files, repo) == ["a.md"] and "git" in warning
 
@@ -286,3 +286,94 @@ def test_cli_projects_and_remove(cli_env, make_repo, tmp_path, capsys):
     assert cli.main(["remove", "shop"]) == 0 and cli.main(["projects"]) == 0
     assert not any(ln.startswith("shop") for ln in capsys.readouterr().out.splitlines())
     assert cli.main(["remove", "ghost"]) == 2 and "no project" in capsys.readouterr().err
+
+
+# ---------- final review fixes ----------
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), reason="needs POSIX permissions")
+def test_unreadable_project_folder_keeps_chunks(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    repo.chmod(0)  # e.g. macOS privacy rules: the GUI-started server may not read ~/Documents
+    try:
+        assert pipeline.needs_ingest() is False
+        r = pipeline.ingest()
+    finally:
+        repo.chmod(0o755)
+    assert r.removed == 0 and any("shop" in e and "not readable" in e for e in r.errors)
+    assert "shop" in pipeline.store.projects()
+
+
+def test_remove_without_docs_dir_drops_chunks(tmp_path, make_repo):
+    pipe = Pipeline(Settings(docs_dir=tmp_path / "absent", index_dir=tmp_path / "idx", embed_provider="hash",
+                             _env_file=None))
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    pipe.add_project(repo)
+    assert pipe.ingest().errors == []
+    pipe.remove_project("shop")
+    pipe.add_project(repo, "shop2")
+    r = pipe.ingest()
+    assert (r.added, r.removed) == (1, 1) and pipe.store.projects() == ["shop2"]
+    pipe.remove_project("shop2")
+    r = pipe.ingest()
+    assert r.removed == 1 and pipe.store.projects() == [] and r.errors == []
+
+
+def test_rebuild_refuses_to_drop_unreachable_sources(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    shutil.rmtree(repo)
+    with pytest.raises(ProjectError, match="shop"):
+        pipeline.ingest(rebuild=True)
+    assert "shop" in pipeline.store.projects()
+
+
+def test_add_from_new_place_after_move_keeps_index(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha", "b.md": "# B\n\nbeta"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    moved = tmp_path / "work" / "shop"
+    moved.parent.mkdir()
+    shutil.move(str(repo), str(moved))
+    project, _ = pipeline.add_project(moved)
+    assert project.name == "shop" and project.path == moved.resolve()
+    r = pipeline.ingest()
+    assert (r.added, r.updated, r.removed) == (0, 0, 0) and r.errors == []
+
+
+def test_ls_files_gets_a_long_timeout(make_repo, tmp_path, monkeypatch):
+    repo = make_repo(tmp_path / "r", {"a.md": "x"})
+    seen = {}
+    real_run = subprocess.run
+
+    def run(cmd, *a, **kw):
+        seen[cmd[3]] = kw.get("timeout")
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(projects.subprocess, "run", run)
+    list_files(repo)
+    assert seen["ls-files"] >= 60  # a big repo on a cold cache takes more than the 2 s meant for detection
+
+
+def test_docs_dir_folder_shadowed_by_connected_project(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nfrom the repository"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    (pipeline.settings.docs_dir / "shop").mkdir()
+    (pipeline.settings.docs_dir / "shop/a.md").write_text("# A\n\nold copy in data/docs", encoding="utf-8")
+    r = pipeline.ingest()
+    assert (r.added, r.updated) == (0, 0) and any("shadowed" in e for e in r.errors)
+    assert pipeline.needs_ingest() is False
+    assert "from the repository" in pipeline.document(pipeline.search("repository", top_k=1)[0]["doc_id"])["text"]
+
+
+def test_odd_file_names_from_git(make_repo, tmp_path):
+    repo = make_repo(tmp_path / "r", {" notes.md": "x", "a.md": "x"})
+    if os.name != "nt":  # a path that is not UTF-8 in the git index must not break the listing
+        blob = subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "a.md"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        subprocess.run([b"git", b"-C", bytes(repo), b"update-index", b"--add", b"--cacheinfo",
+                        b"100644," + blob.encode() + b",bad\xff.md"], check=True, capture_output=True)
+    assert rel(list_files(repo)[0], repo) == [" notes.md", "a.md"]
