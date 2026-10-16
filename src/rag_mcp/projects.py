@@ -7,14 +7,17 @@ machine-local paths. Git is optional: without it a folder is walked with the usu
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .loaders import SUPPORTED_SUFFIXES, _hidden
 from .store import _atomic_write
 
 REGISTRY = "projects.json"
+SKIP_DIRS = {"node_modules", ".venv", "venv", "build", "dist", "target", "vendor", "__pycache__"}
 
 
 class ProjectError(ValueError):
@@ -97,3 +100,36 @@ def save_projects(index_dir: Path, projects: dict[str, Project]) -> None:
     }
     payload = json.dumps(raw, ensure_ascii=False, indent=1).encode("utf-8")
     _atomic_write(index_dir / REGISTRY, lambda f: f.write(payload))
+
+
+def _key(path: Path) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _inside(path: Path, parent: Path) -> bool:
+    """`path` is `parent` or lies under it, after resolving symlinks and case on case-insensitive systems."""
+    p, q = _key(path), _key(parent)
+    return p == q or p.startswith(q.rstrip(os.sep) + os.sep)
+
+
+def list_files(root: Path, skip: Path | None = None) -> tuple[list[Path], str | None]:
+    """Documents under `root`: what git tracks or would track (so .gitignore applies), or a plain
+    walk without junk folders when `root` is not in a repository. The second value is a warning
+    when git is there but could not list the files."""
+    warning = None
+    out = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if out is not None:
+        candidates = [root / rel for rel in dict.fromkeys(out.split("\0")) if rel]
+    else:
+        if repo_root(root) is not None:
+            warning = f"git ls-files failed in {root}; indexed it without .gitignore"
+        candidates = []
+        for folder, dirs, names in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+            candidates += [Path(folder) / n for n in names]
+    files = [
+        p for p in candidates
+        if p.suffix.lower() in SUPPORTED_SUFFIXES and not _hidden(p, root) and p.is_file()
+        and not (skip is not None and _inside(p, skip))
+    ]
+    return sorted(files), warning

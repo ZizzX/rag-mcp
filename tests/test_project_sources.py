@@ -2,10 +2,12 @@
 
 import pytest
 
+from rag_mcp import projects
 from rag_mcp.projects import (
     Project,
     RegistryError,
     git_common_dir,
+    list_files,
     load_projects,
     normalize_origin,
     origin_of,
@@ -48,3 +50,44 @@ def test_git_helpers(make_repo, tmp_path):
     assert git_common_dir(repo / "docs") == (repo / ".git").resolve()
     assert origin_of(repo) == "github.com/acme/shop"
     assert repo_root(tmp_path) is None and origin_of(tmp_path) is None
+
+
+def rel(files, root):
+    return sorted(p.relative_to(root).as_posix() for p in files)
+
+
+def test_list_files_uses_git(make_repo, tmp_path):
+    repo = make_repo(tmp_path / "r", {".gitignore": "out/\n", "README.md": "x", "docs/a.md": "x",
+                                      "src/app.py": "x", ".github/x.md": "x", "out/gen.md": "x"})
+    (repo / "docs/new.md").write_text("untracked", encoding="utf-8")
+    (repo / "docs/Спец ификация.md").write_text("x", encoding="utf-8")
+    (repo / "README.md").unlink()  # deleted, still in the git index
+    files, warning = list_files(repo)
+    assert rel(files, repo) == ["docs/a.md", "docs/new.md", "docs/Спец ификация.md"] and warning is None
+
+
+def test_list_files_subfolder_only(make_repo, tmp_path):
+    repo = make_repo(tmp_path / "r", {"README.md": "x", "docs/a.md": "x"})
+    assert rel(list_files(repo / "docs")[0], repo / "docs") == ["a.md"]
+
+
+def test_list_files_without_git_skips_junk(tmp_path):
+    for f in ["a.md", "node_modules/p/readme.md", "build/x.md", ".cache/y.md", "sub/b.pdf", "c.py"]:
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("x")
+    assert rel(list_files(tmp_path)[0], tmp_path) == ["a.md", "sub/b.pdf"]
+
+
+def test_list_files_falls_back_with_warning(make_repo, tmp_path, monkeypatch):
+    repo = make_repo(tmp_path / "r", {"a.md": "x", "node_modules/m.md": "x"})
+    real = projects.git
+    monkeypatch.setattr(projects, "git", lambda cwd, *a: None if a[0] == "ls-files" else real(cwd, *a))  # "dubious ownership"
+    files, warning = list_files(repo)
+    assert rel(files, repo) == ["a.md"] and "git" in warning
+
+
+def test_list_files_skips_subtree(tmp_path):
+    for f in ["a.md", "data/docs/b.md"]:
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("x")
+    assert rel(list_files(tmp_path, skip=tmp_path / "data/docs")[0], tmp_path) == ["a.md"]
