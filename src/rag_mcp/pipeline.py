@@ -5,13 +5,14 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .chunking import chunk_document
 from .config import Settings, load_settings
 from .embeddings import make_embedder
 from .loaders import doc_id_for, file_hash, iter_files, load_document
+from .projects import Project, ProjectError, RegistryError, list_files, load_projects, resolve_project, save_projects
 from .store import HybridStore
 
 log = logging.getLogger("rag_mcp")
@@ -33,6 +34,27 @@ class IngestReport:
         self.errors = self.errors or []
 
 
+@dataclass
+class SourceScan:
+    """Every document the index should hold right now, and what could not be looked at."""
+
+    files: list[tuple[Path, str]] = field(default_factory=list)  # (file, source)
+    missing: list[str] = field(default_factory=list)  # connected projects whose folder is gone
+    warnings: list[str] = field(default_factory=list)
+    projects: dict[str, Project] = field(default_factory=dict)
+    docs_dir_found: bool = True
+
+    def kept_sources(self) -> tuple[str, ...]:
+        """Source prefixes whose documents stay in the index although their folder is unreachable."""
+        return tuple(f"{name}/" for name in self.missing)
+
+    def is_kept(self, source: str) -> bool:
+        if source.startswith(self.kept_sources()):
+            return True
+        # docs_dir itself is gone (unmounted drive, wrong RAG_DOCS_DIR): keep its documents too
+        return not self.docs_dir_found and source.split("/", 1)[0] not in self.projects
+
+
 class Pipeline:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
@@ -51,19 +73,37 @@ class Pipeline:
             rrf_k=s.rrf_k,
         )
 
+    def scan(self) -> SourceScan:
+        """Documents of docs_dir plus every connected project. Raises RegistryError."""
+        s = self.settings
+        out = SourceScan(projects=load_projects(s.index_dir), docs_dir_found=s.docs_dir.is_dir())
+        if out.docs_dir_found:
+            out.files += [(p, p.relative_to(s.docs_dir).as_posix()) for p in iter_files(s.docs_dir)]
+        for project in out.projects.values():
+            if not project.path.is_dir():
+                out.missing.append(project.name)
+                continue
+            files, warning = list_files(project.path, skip=s.docs_dir)
+            out.files += [(f, f"{project.name}/{f.relative_to(project.path).as_posix()}") for f in files]
+            if warning:
+                out.warnings.append(f"project {project.name}: {warning}")
+        return out
+
     def needs_ingest(self) -> bool:
         """True when a document was added, changed or removed since the last commit."""
-        s = self.settings
-        if not s.docs_dir.exists():
-            return False
-        docs = {k: v for k, v in self.store.manifest().items() if k != "_meta"}
-        files = list(iter_files(s.docs_dir))
-        if len(files) != len(docs):
+        try:
+            scan = self.scan()
+        except RegistryError:
+            return False  # ingest would refuse anyway; searching what is indexed still works
+        docs = {
+            k: v for k, v in self.store.manifest().items() if k != "_meta" and not scan.is_kept(v.get("source", ""))
+        }
+        if len(scan.files) != len(docs):
             return True
         # Compare each file with what the last ingest saw (see _stat), not with
         # the manifest's own mtime: a file copied with `cp -p` or unpacked keeps an old mtime.
-        for path in files:
-            entry = docs.get(doc_id_for(path.relative_to(s.docs_dir).as_posix()))
+        for path, source in scan.files:
+            entry = docs.get(doc_id_for(source))
             if entry is None or entry.get("stat") != _stat(path):
                 return True
         return False
@@ -86,7 +126,7 @@ class Pipeline:
 
     def ingest(self, rebuild: bool = False) -> IngestReport:
         """Index new and changed files. Raises IndexBusy if another process is writing."""
-        if not self.settings.docs_dir.exists():
+        if not self.settings.docs_dir.exists() and not load_projects(self.settings.index_dir):
             raise FileNotFoundError(f"Documents directory does not exist: {self.settings.docs_dir}")
         # Write through a separate store, so searches on self.store never see a half-applied
         # update; self.store picks the commit up from disk on its next read. The in-process
@@ -103,6 +143,7 @@ class Pipeline:
     def _ingest(self, store: HybridStore, rebuild: bool) -> IngestReport:
         s = self.settings
         report = IngestReport()
+        scan = self.scan()  # first: a broken projects.json must stop us before anything changes
         if rebuild:
             store.reset()
         manifest = store.manifest()
@@ -115,9 +156,16 @@ class Pipeline:
             raise RuntimeError("Index format changed in this version of rag-mcp. Run `rag-mcp ingest --rebuild`.")
         manifest["_meta"] = {"schema": SCHEMA_VERSION}
 
-        seen: set[str] = set()
-        for path in iter_files(s.docs_dir):
-            source = path.relative_to(s.docs_dir).as_posix()
+        seen: set[str] = {d for d, m in docs.items() if scan.is_kept(m.get("source", ""))}
+        for name in scan.missing:
+            report.errors.append(
+                f"project {name}: folder not found ({scan.projects[name].path}); its documents stay in the index. "
+                f"Run `rag-mcp remove {name}`, or `rag-mcp add` it again from its new place"
+            )
+        if not scan.docs_dir_found:
+            report.errors.append(f"{s.docs_dir} not found; its documents stay in the index")
+        report.errors += scan.warnings
+        for path, source in scan.files:
             doc_id = doc_id_for(source)
             seen.add(doc_id)
             prev = manifest.get(doc_id)
@@ -128,7 +176,7 @@ class Pipeline:
                     prev["stat"] = stat  # touched or copied back: same content, remember the new mtime
                     report.unchanged += 1
                     continue
-                doc = load_document(path, s.docs_dir)
+                doc = load_document(path, source)
                 chunks = chunk_document(doc, s.chunk_size, s.chunk_overlap)
                 if prev:
                     store.delete_document(doc_id)
@@ -212,8 +260,62 @@ class Pipeline:
             "text": "\n\n".join(c["text"] for c in chunks),
         }
 
+    # ---------- connected projects ----------
+    def add_project(
+        self, path: str | Path | None, name: str | None = None, *, cwd: Path | None = None, force: bool = False
+    ) -> tuple[Project, int]:
+        """Register a project folder (see projects.resolve_project); the caller runs ingest() after.
+        Raises ProjectError, RegistryError or IndexBusy."""
+        s = self.settings
+        with self.store.write_lock():
+            existing = load_projects(s.index_dir)
+            project, files = resolve_project(
+                path, name, cwd=cwd or Path.cwd(), docs_dir=s.docs_dir, existing=existing, force=force
+            )
+            if project.name in existing:
+                project.added = existing[project.name].added
+            save_projects(s.index_dir, {**existing, project.name: project})
+        return project, len(files)
+
+    def remove_project(self, name: str) -> Project:
+        """Unregister a project; the next ingest() drops its documents."""
+        s = self.settings
+        with self.store.write_lock():
+            existing = load_projects(s.index_dir)
+            if name not in existing:
+                raise ProjectError(f"There is no project {name!r}; see `rag-mcp projects`")
+            project = existing.pop(name)
+            save_projects(s.index_dir, existing)
+        return project
+
+    def projects_info(self) -> list[dict]:
+        """Connected projects and project folders of docs_dir, with what the index holds for each."""
+        s = self.settings
+        manifest = [m.get("source", "") for k, m in self.store.manifest().items() if k != "_meta"]
+        per_source = self.store.sources()
+
+        def row(name: str, kind: str, path: Path, exists: bool) -> dict:
+            prefix = f"{name}/"
+            return {
+                "name": name, "kind": kind, "path": str(path), "exists": exists,
+                "documents": sum(1 for src in manifest if src.startswith(prefix)),
+                "chunks": sum(v["chunks"] for src, v in per_source.items() if src.startswith(prefix)),
+            }
+
+        rows = [row(p.name, "connected", p.path, p.path.is_dir()) for p in load_projects(s.index_dir).values()]
+        if s.docs_dir.is_dir():
+            rows += [
+                row(d.name, "folder", d, True)
+                for d in sorted(s.docs_dir.iterdir()) if d.is_dir() and not d.name.startswith(".")
+            ]
+        return rows
+
     def status(self) -> dict:
         s = self.settings
+        try:
+            connected: dict = {p.name: str(p.path) for p in load_projects(s.index_dir).values()}
+        except RegistryError as e:
+            connected = {"error": str(e)}
         return {
             "docs_dir": str(s.docs_dir),
             "index_dir": str(s.index_dir),
@@ -223,6 +325,7 @@ class Pipeline:
             "chunks": self.store.count(),
             "projects": self.store.projects(),
             "shared_projects": self.settings.shared_projects,
+            "connected_projects": connected,
         }
 
 

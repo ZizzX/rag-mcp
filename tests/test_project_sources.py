@@ -1,12 +1,15 @@
 """Connected project folders: registry, file listing, indexing and the CLI (T-014)."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from rag_mcp import projects
+from rag_mcp.config import Settings
+from rag_mcp.pipeline import Pipeline
 from rag_mcp.projects import (
     Project,
     ProjectError,
@@ -20,6 +23,7 @@ from rag_mcp.projects import (
     resolve_project,
     save_projects,
 )
+from rag_mcp.store import IndexBusy
 
 
 @pytest.mark.parametrize("url", [
@@ -177,3 +181,77 @@ def test_same_path_same_name_is_an_update(tmp_path):
     old = Project("x", (tmp_path / "x").resolve(), None, None, "2020-01-01")
     p, _ = resolve_project(tmp_path / "x", "x", cwd=tmp_path, docs_dir=tmp_path / "d", existing={"x": old})
     assert p.name == "x" and p.path == old.path
+
+
+def test_connected_project_is_indexed_in_place(pipeline, make_repo, tmp_path):
+    pipeline.ingest()  # examples/docs first, so the counts below are ours
+    repo = make_repo(tmp_path / "shop", {"docs/refunds.md": "# Refunds\n\nRefunds go through Stripe."})
+    pipeline.add_project(repo)
+    r = pipeline.ingest()
+    assert r.added == 1 and "shop" in pipeline.store.projects()
+    hit = pipeline.search("refunds stripe", top_k=1, source_prefixes=["shop/"])[0]
+    assert hit["source"] == "shop/docs/refunds.md" and pipeline.needs_ingest() is False
+    (repo / "docs/refunds.md").write_text("# Refunds\n\nRefunds go through Adyen.", encoding="utf-8")
+    assert pipeline.needs_ingest() is True and pipeline.ingest().updated == 1
+
+
+def test_remove_drops_chunks_and_rename_reindexes(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    pipeline.remove_project("shop")
+    pipeline.add_project(repo, "shop2")
+    pipeline.ingest()
+    assert "shop" not in pipeline.store.projects() and "shop2" in pipeline.store.projects()
+
+
+def test_missing_path_keeps_chunks(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    shutil.rmtree(repo)
+    assert pipeline.needs_ingest() is False
+    r = pipeline.ingest()
+    assert r.removed == 0 and any("shop" in e and "not found" in e for e in r.errors)
+    assert "shop" in pipeline.store.projects()
+
+
+def test_corrupt_registry_blocks_ingest(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "x"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    (pipeline.settings.index_dir / "projects.json").write_text("{", encoding="utf-8")
+    with pytest.raises(RegistryError):
+        pipeline.ingest()
+    with pytest.raises(RegistryError):
+        pipeline.ingest(rebuild=True)  # must refuse before the rebuild empties the index
+    assert "shop" in pipeline.store.projects()
+
+
+def test_add_while_index_is_busy(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "x"})
+    with pipeline._open_store().write_lock():
+        with pytest.raises(IndexBusy):
+            pipeline.add_project(repo)
+    assert load_projects(pipeline.settings.index_dir) == {}
+
+
+def test_only_projects_without_docs_dir(tmp_path, make_repo):
+    pipe = Pipeline(Settings(docs_dir=tmp_path / "absent", index_dir=tmp_path / "idx", embed_provider="hash",
+                             _env_file=None))
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    pipe.add_project(repo)
+    assert pipe.needs_ingest() is True and pipe.ingest().added == 1 and pipe.needs_ingest() is False
+
+
+def test_projects_info(pipeline, make_repo, tmp_path):
+    (pipeline.settings.docs_dir / "team").mkdir()
+    (pipeline.settings.docs_dir / "team/x.md").write_text("# X\n\nx")
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    rows = {r["name"]: r for r in pipeline.projects_info()}
+    assert rows["shop"] | {"chunks": 0} == {"name": "shop", "kind": "connected", "path": str(repo.resolve()),
+                                         "exists": True, "documents": 1, "chunks": 0}
+    assert rows["shop"]["chunks"] > 0
+    assert rows["team"]["kind"] == "folder" and rows["team"]["documents"] == 1
