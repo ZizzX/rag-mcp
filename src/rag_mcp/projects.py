@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from datetime import date
@@ -118,11 +119,18 @@ def _inside(path: Path, parent: Path) -> bool:
     return p == q or p.startswith(q.rstrip(os.sep) + os.sep)
 
 
-def list_files(root: Path, skip: Path | None = None) -> tuple[list[Path], str | None]:
+def list_files(root: Path, skip: Path | None = None) -> tuple[list[Path], str | None, bool]:
     """Documents under `root`: what git tracks or would track (so .gitignore applies), or a plain
-    walk without junk folders when `root` is not in a repository. The second value is a warning
-    when git is there but could not list the files."""
+    walk without junk folders when `root` is not in a repository. Also returns a warning, and False
+    when some folder or file could not be read: the listing is then incomplete, and the caller must
+    not take a missing document for a deleted one."""
     warning = None
+    unreadable = False
+
+    def failed(_err: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+
     out = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", timeout=60)
     if out is not None:
         candidates = [root / rel for rel in dict.fromkeys(out.split("\0")) if rel]
@@ -130,15 +138,24 @@ def list_files(root: Path, skip: Path | None = None) -> tuple[list[Path], str | 
         if repo_root(root) is not None:
             warning = f"git ls-files failed or timed out in {root}; indexed it without .gitignore"
         candidates = []
-        for folder, dirs, names in os.walk(root):
+        for folder, dirs, names in os.walk(root, onerror=failed):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
             candidates += [Path(folder) / n for n in names]
-    files = [
-        p for p in candidates
-        if p.suffix.lower() in SUPPORTED_SUFFIXES and not _hidden(p, root) and p.is_file()
-        and not (skip is not None and _inside(p, skip))
-    ]
-    return sorted(files), warning
+    files = []
+    for p in candidates:
+        if p.suffix.lower() not in SUPPORTED_SUFFIXES or _hidden(p, root) or (skip is not None and _inside(p, skip)):
+            continue
+        try:
+            if stat.S_ISREG(p.stat().st_mode):
+                files.append(p)
+        except FileNotFoundError:
+            continue  # deleted from the working copy, still in the git index
+        except OSError:
+            unreadable = True
+    if unreadable:
+        note = f"some folders in {root} could not be read; their documents stay in the index"
+        warning = f"{warning}; {note}" if warning else note
+    return sorted(files), warning, not unreadable
 
 
 def resolve_project(
@@ -193,7 +210,7 @@ def resolve_project(
                 f"supported, run `rag-mcp remove {other.name}` first"
             )
 
-    files, _ = list_files(target, skip=docs_dir)
+    files, _, _ = list_files(target, skip=docs_dir)
     if len(files) > MAX_FILES and not force:
         raise ProjectError(f"{len(files)} documents, more than {MAX_FILES}; pass --force to connect anyway")
     project = Project(name, target, origin_of(target) if common else None, common, date.today().isoformat())

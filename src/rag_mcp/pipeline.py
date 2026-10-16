@@ -41,6 +41,7 @@ class SourceScan:
 
     files: list[tuple[Path, str]] = field(default_factory=list)  # (file, source)
     missing: list[str] = field(default_factory=list)  # connected projects whose folder cannot be read
+    incomplete: list[str] = field(default_factory=list)  # connected projects with an unreadable subfolder
     warnings: list[str] = field(default_factory=list)
     projects: dict[str, Project] = field(default_factory=dict)
     docs_dir_found: bool = True
@@ -55,7 +56,7 @@ class SourceScan:
         Entries carry `project` when they come from a connected project (see _ingest)."""
         owner = entry.get("project")
         if owner is not None:
-            return owner in self.missing
+            return owner in self.missing or owner in self.incomplete
         return not self.docs_dir_found  # unmounted drive, wrong RAG_DOCS_DIR
 
 
@@ -99,8 +100,10 @@ class Pipeline:
             except OSError:
                 out.missing.append(project.name)
                 continue
-            files, warning = list_files(project.path, skip=s.docs_dir)
+            files, warning, complete = list_files(project.path, skip=s.docs_dir)
             out.files += [(f, f"{project.name}/{f.relative_to(project.path).as_posix()}") for f in files]
+            if not complete:
+                out.incomplete.append(project.name)
             if warning:
                 out.warnings.append(f"project {project.name}: {warning}")
         return out
@@ -111,16 +114,18 @@ class Pipeline:
             scan = self.scan()
         except RegistryError:
             return False  # ingest would refuse anyway; searching what is indexed still works
-        docs = {k: v for k, v in self.store.manifest().items() if k != "_meta" and not scan.is_kept(v)}
-        if len(scan.files) != len(docs):
-            return True
+        docs = {k: v for k, v in self.store.manifest().items() if k != "_meta"}
         # Compare each file with what the last ingest saw (see _stat), not with
         # the manifest's own mtime: a file copied with `cp -p` or unpacked keeps an old mtime.
+        listed = set()
         for path, source in scan.files:
-            entry = docs.get(doc_id_for(source))
+            doc_id = doc_id_for(source)
+            listed.add(doc_id)
+            entry = docs.get(doc_id)
             if entry is None or entry.get("stat") != _stat(path):
                 return True
-        return False
+        # a document no longer listed was removed, unless its folder could not be read
+        return any(d not in listed and not scan.is_kept(m) for d, m in docs.items())
 
     def index_problem(self) -> str | None:
         """Why searching the index would give nothing useful, in words for the user; None when it is fine."""
@@ -161,7 +166,7 @@ class Pipeline:
         scan = self.scan()  # first: a broken projects.json must stop us before anything changes
         if rebuild:
             before = [m for k, m in store.manifest().items() if k != "_meta"]
-            lost = sorted({m["project"] for m in before if m.get("project") in scan.missing})
+            lost = sorted({m["project"] for m in before if m.get("project") in scan.missing + scan.incomplete})
             if not scan.docs_dir_found and any("project" not in m for m in before):
                 lost.append(str(s.docs_dir))
             if lost:
@@ -201,6 +206,8 @@ class Pipeline:
                     prev["stat"] = stat  # touched or copied back: same content, remember the new mtime
                     if owner:
                         prev["project"] = owner
+                    else:
+                        prev.pop("project", None)  # back in docs_dir after its project was removed
                     report.unchanged += 1
                     continue
                 doc = load_document(path, source)

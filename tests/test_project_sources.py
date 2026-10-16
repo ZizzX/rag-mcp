@@ -72,8 +72,9 @@ def test_list_files_uses_git(make_repo, tmp_path):
     (repo / "docs/new.md").write_text("untracked", encoding="utf-8")
     (repo / "docs/Спец ификация.md").write_text("x", encoding="utf-8")
     (repo / "README.md").unlink()  # deleted, still in the git index
-    files, warning = list_files(repo)
-    assert rel(files, repo) == ["docs/a.md", "docs/new.md", "docs/Спец ификация.md"] and warning is None
+    files, warning, complete = list_files(repo)
+    assert rel(files, repo) == ["docs/a.md", "docs/new.md", "docs/Спец ификация.md"]
+    assert warning is None and complete
 
 
 def test_list_files_subfolder_only(make_repo, tmp_path):
@@ -92,8 +93,8 @@ def test_list_files_falls_back_with_warning(make_repo, tmp_path, monkeypatch):
     repo = make_repo(tmp_path / "r", {"a.md": "x", "node_modules/m.md": "x"})
     real = projects.git
     monkeypatch.setattr(projects, "git", lambda cwd, *a, **kw: None if a[0] == "ls-files" else real(cwd, *a, **kw))
-    files, warning = list_files(repo)
-    assert rel(files, repo) == ["a.md"] and "git" in warning
+    files, warning, complete = list_files(repo)
+    assert rel(files, repo) == ["a.md"] and "git" in warning and complete
 
 
 def test_list_files_skips_subtree(tmp_path):
@@ -209,7 +210,7 @@ def test_missing_path_keeps_chunks(pipeline, make_repo, tmp_path):
     repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
     pipeline.add_project(repo)
     pipeline.ingest()
-    shutil.rmtree(repo)
+    repo.rename(repo.with_name("shop-gone"))  # rmtree fails on read-only .git objects on Windows
     assert pipeline.needs_ingest() is False
     r = pipeline.ingest()
     assert r.removed == 0 and any("shop" in e and "not found" in e for e in r.errors)
@@ -324,7 +325,7 @@ def test_rebuild_refuses_to_drop_unreachable_sources(pipeline, make_repo, tmp_pa
     repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
     pipeline.add_project(repo)
     pipeline.ingest()
-    shutil.rmtree(repo)
+    repo.rename(repo.with_name("shop-gone"))  # rmtree fails on read-only .git objects on Windows
     with pytest.raises(ProjectError, match="shop"):
         pipeline.ingest(rebuild=True)
     assert "shop" in pipeline.store.projects()
@@ -377,3 +378,49 @@ def test_odd_file_names_from_git(make_repo, tmp_path):
         subprocess.run([b"git", b"-C", bytes(repo), b"update-index", b"--add", b"--cacheinfo",
                         b"100644," + blob.encode() + b",bad\xff.md"], check=True, capture_output=True)
     assert rel(list_files(repo)[0], repo) == [" notes.md", "a.md"]
+
+
+# ---------- PR #6 review (Codex) ----------
+
+posix_permissions = pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), reason="needs POSIX permissions"
+)
+
+
+@posix_permissions
+@pytest.mark.parametrize("with_git", [True, False])
+def test_unreadable_subfolder_keeps_its_chunks(pipeline, make_repo, tmp_path, with_git):
+    files = {"README.md": "# Readme\n\nroot", "docs/a.md": "# A\n\nalpha"}
+    if with_git:
+        root = make_repo(tmp_path / "shop", files)
+    else:
+        root = tmp_path / "shop"
+        for name, text in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text, encoding="utf-8")
+    pipeline.add_project(root)
+    pipeline.ingest()
+    (root / "docs").chmod(0)
+    try:
+        listed, warning, complete = list_files(root)
+        assert rel(listed, root) == ["README.md"] and not complete and "could not be read" in warning
+        assert pipeline.needs_ingest() is False
+        r = pipeline.ingest()
+    finally:
+        (root / "docs").chmod(0o755)
+    assert r.removed == 0 and any("could not be read" in e for e in r.errors)
+    assert any(src == "shop/docs/a.md" for src in pipeline.store.sources())
+
+
+def test_document_back_in_docs_dir_loses_project_tag(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nsame text"})
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    docs = pipeline.settings.docs_dir
+    (docs / "shop").mkdir()
+    (docs / "shop/a.md").write_text("# A\n\nsame text", encoding="utf-8")  # identical copy, shadowed for now
+    pipeline.remove_project("shop")
+    pipeline.ingest()  # shop/a.md now belongs to docs_dir, with the same source and content hash
+    docs.rename(docs.with_name("docs-unmounted"))
+    r = pipeline.ingest()
+    assert r.removed == 0 and "shop" in pipeline.store.projects()
