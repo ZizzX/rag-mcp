@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from rag_mcp import projects
+from rag_mcp import cli, projects
 from rag_mcp.config import Settings
 from rag_mcp.pipeline import Pipeline
 from rag_mcp.projects import (
@@ -255,3 +255,34 @@ def test_projects_info(pipeline, make_repo, tmp_path):
                                          "exists": True, "documents": 1, "chunks": 0}
     assert rows["shop"]["chunks"] > 0
     assert rows["team"]["kind"] == "folder" and rows["team"]["documents"] == 1
+
+
+@pytest.fixture
+def cli_env(tmp_path, monkeypatch):
+    (tmp_path / "docs").mkdir()
+    monkeypatch.setenv("RAG_DOCS_DIR", str(tmp_path / "docs"))
+    monkeypatch.setenv("RAG_INDEX_DIR", str(tmp_path / "index"))
+    monkeypatch.setenv("RAG_EMBED_PROVIDER", "hash")
+    monkeypatch.setenv("RAG_QDRANT_URL", "")
+
+
+def test_cli_add_from_subfolder_indexes_repo(cli_env, make_repo, tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path / "shop", {"docs/a.md": "# A\n\nalpha"}, origin="git@github.com:Acme/shop.git")
+    monkeypatch.chdir(repo / "docs")
+    assert cli.main(["add"]) == 0
+    out = capsys.readouterr().out
+    assert "shop" in out and str(repo.resolve()) in out and "github.com/acme/shop" in out and "added=1" in out
+
+
+def test_cli_add_refusal_exits_2(cli_env, capsys):
+    assert cli.main(["add", str(Path.home())]) == 2 and "too broad" in capsys.readouterr().err
+
+
+def test_cli_projects_and_remove(cli_env, make_repo, tmp_path, capsys):
+    repo = make_repo(tmp_path / "shop", {"a.md": "# A\n\nalpha"})
+    assert cli.main(["add", str(repo)]) == 0 and cli.main(["projects"]) == 0
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("shop"))
+    assert "connected" in line and " 1 " in line
+    assert cli.main(["remove", "shop"]) == 0 and cli.main(["projects"]) == 0
+    assert not any(ln.startswith("shop") for ln in capsys.readouterr().out.splitlines())
+    assert cli.main(["remove", "ghost"]) == 2 and "no project" in capsys.readouterr().err
