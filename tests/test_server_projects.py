@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,6 +53,7 @@ async def test_search_scopes_to_detected_project(workspace):
     assert out["scope"]["mode"] == "project"
     assert out["scope"]["project"] == "shop-backend"
     assert out["scope"]["prefixes"] == ["shop-backend/", "common/"]
+    assert out["scope"]["matched_by"] == "name"
     assert out["results"] and {r["project"] for r in out["results"]} <= {"shop-backend", "common"}
 
 
@@ -61,6 +63,7 @@ async def test_search_falls_back_to_all_when_workspace_unknown(workspace, tmp_pa
     elsewhere.mkdir()
     out = json.loads(await server.search("refunds", top_k=5, ctx=fake_ctx(elsewhere)))
     assert out["scope"]["mode"] == "all"
+    assert "something-else" in out["scope"]["hint"] and "note" not in out["scope"]
     assert {r["project"] for r in out["results"]} >= {"shop-backend", "mobile-app"}
 
 
@@ -77,6 +80,7 @@ async def test_index_status_shows_detected_project(workspace):
     status = json.loads(await server.index_status(ctx=fake_ctx(workspace)))
     assert status["projects"] == ["common", "mobile-app", "shop-backend"]
     assert status["detected_project"] == "shop-backend"
+    assert status["matched_by"] == "name"
 
 
 @pytest.mark.anyio
@@ -85,6 +89,7 @@ async def test_explicit_project_parameter(workspace, tmp_path):
     elsewhere.mkdir()
     out = json.loads(await server.search("refunds", top_k=5, project="mobile-app", ctx=fake_ctx(elsewhere)))
     assert out["scope"]["mode"] == "project" and out["scope"]["project"] == "mobile-app"
+    assert out["scope"]["matched_by"] == "explicit"
     assert {r["project"] for r in out["results"]} <= {"mobile-app", "common"}
 
     out = json.loads(await server.search("refunds", top_k=5, project="ghost", ctx=fake_ctx(elsewhere)))
@@ -98,3 +103,18 @@ async def test_claude_project_dir_env_fallback(workspace, monkeypatch, tmp_path)
     ctx = SimpleNamespace(client_capabilities=SimpleNamespace(roots=None), session=None)
     out = json.loads(await server.search("refunds", top_k=5, ctx=ctx))
     assert out["scope"]["project"] == "shop-backend"
+
+
+@pytest.mark.anyio
+async def test_search_from_worktree_of_connected_repo(workspace, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "shop", {"docs/stripe.md": "# Stripe\n\nRefunds via the Stripe dashboard."})
+    server._pipeline.add_project(repo)
+    server._pipeline.ingest()
+    wt = tmp_path / "orca" / "ATS-3010"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(wt), "-b", "ATS-3010"],
+                   check=True, capture_output=True)
+    out = json.loads(await server.search("refunds", top_k=5, ctx=fake_ctx(wt)))
+    scope = out["scope"]
+    assert (scope["mode"], scope["project"], scope["matched_by"]) == ("project", "shop", "git_dir")
+    assert scope["docs_from"] == str(repo.resolve()) and scope["prefixes"] == ["shop/", "common/"]
+    assert out["results"] and {r["project"] for r in out["results"]} <= {"shop", "common"}

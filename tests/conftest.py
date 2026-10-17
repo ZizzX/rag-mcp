@@ -53,3 +53,12 @@ def make_repo():
         return root
 
     return make
+
+
+@pytest.fixture
+def cli_env(tmp_path, monkeypatch):
+    (tmp_path / "docs").mkdir()
+    monkeypatch.setenv("RAG_DOCS_DIR", str(tmp_path / "docs"))
+    monkeypatch.setenv("RAG_INDEX_DIR", str(tmp_path / "index"))
+    monkeypatch.setenv("RAG_EMBED_PROVIDER", "hash")
+    monkeypatch.setenv("RAG_QDRANT_URL", "")

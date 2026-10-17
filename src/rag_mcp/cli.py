@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,9 +25,12 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("search", help="query the index from the terminal")
     s.add_argument("query")
     s.add_argument("-k", "--top-k", type=int, default=None)
-    s.add_argument("--source", action="append", default=None, metavar="PREFIX",
-                   help="restrict to sources starting with PREFIX (repeatable)")
-    s.add_argument("--project", default=None, help="scope to this project folder plus shared folders")
+    where = s.add_mutually_exclusive_group()
+    where.add_argument("--source", action="append", default=None, metavar="PREFIX",
+                       help="restrict to sources starting with PREFIX (repeatable)")
+    where.add_argument("--project", default=None,
+                       help="scope to this project plus shared folders (default: the project of the current folder)")
+    where.add_argument("--all", action="store_true", help="search every project")
     s.add_argument("--json", action="store_true")
 
     sub.add_parser("serve", help="run the MCP server on stdio")
@@ -101,18 +105,32 @@ def _run(pipe: Pipeline, args: argparse.Namespace) -> int:
         elif not rows:
             print("No projects yet. Connect one with `rag-mcp add` inside its folder.")
         else:
+            here = pipe.detect_project([os.getcwd()]).project
             width = max(len(r["name"]) for r in rows)
             for r in rows:
                 gone = "" if r["exists"] else "  (path not found)"
+                gone += "  <- here" if r["name"] == here else ""  # ASCII: a cp1252 pipe on Windows has no arrow
                 print(f"{r['name']:<{width}}  {r['kind']:<9}  {r['documents']:>5}  {r['chunks']:>6}  {r['path']}{gone}")
         return 0
 
     if args.cmd == "search":
-        prefixes = args.source or pipe.scope_for(args.project)
+        if args.source:
+            prefixes, scope = args.source, " ".join(args.source)
+        elif args.all:
+            prefixes, scope = None, "all projects"
+        else:
+            found = pipe.detect_project([os.getcwd()], explicit=args.project)
+            prefixes = pipe.scope_for(found.project)
+            if prefixes is None:
+                scope = f"all projects ({found.hint})"
+            else:
+                docs_from = f", documents from {found.docs_from}" if found.docs_from else ""
+                scope = f"{' '.join(prefixes)} (matched by {found.matched_by}{docs_from})"
         results = pipe.search(args.query, top_k=args.top_k, source_prefixes=prefixes)
         if args.json:
             print(json.dumps(results, ensure_ascii=False, indent=1))
         else:
+            print(f"scope: {scope}")
             for n, r in enumerate(results, 1):
                 where = r["source"] + (f" p.{r['page']}" if r["page"] else "")
                 head = f" [{r['heading']}]" if r["heading"] else ""

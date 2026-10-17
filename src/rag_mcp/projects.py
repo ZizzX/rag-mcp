@@ -119,6 +119,33 @@ def _inside(path: Path, parent: Path) -> bool:
     return p == q or p.startswith(q.rstrip(os.sep) + os.sep)
 
 
+def match_registry(folder: Path, projects: dict[str, Project]) -> tuple[Project, str, str | None] | None:
+    """The connected project a workspace folder belongs to, how it matched, and a note when the choice
+    was ambiguous. Inside a project's folder → "path"; same origin (a second clone, a worktree) →
+    "origin"; same .git without an origin (a worktree elsewhere) → "git_dir". Git runs only when
+    some project has something to compare with; without git those two steps find nothing."""
+    by_name = sorted(projects.values(), key=lambda p: p.name)
+    for p in by_name:
+        if _inside(folder, p.path):
+            return p, "path", None
+    origin = origin_of(folder) if any(p.origin for p in by_name) else None
+    common = git_common_dir(folder) if any(p.git_dir for p in by_name) else None
+    same_git = [p for p in by_name if common and p.git_dir and _key(p.git_dir) == _key(common)]
+    same_origin = [p for p in by_name if origin and p.origin == origin]
+    if same_origin:
+        own = [p for p in same_origin if p in same_git]
+        if own:
+            return own[0], "origin", None
+        note = None
+        if len(same_origin) > 1:
+            names = ", ".join(p.name for p in same_origin)
+            note = f"connected projects {names} share this origin; using {same_origin[0].name}"
+        return same_origin[0], "origin", note
+    if same_git:
+        return same_git[0], "git_dir", None
+    return None
+
+
 def list_files(root: Path, skip: Path | None = None) -> tuple[list[Path], str | None, bool]:
     """Documents under `root`: what git tracks or would track (so .gitignore applies), or a plain
     walk without junk folders when `root` is not in a repository. Also returns a warning, and False

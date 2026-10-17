@@ -258,15 +258,6 @@ def test_projects_info(pipeline, make_repo, tmp_path):
     assert rows["team"]["kind"] == "folder" and rows["team"]["documents"] == 1
 
 
-@pytest.fixture
-def cli_env(tmp_path, monkeypatch):
-    (tmp_path / "docs").mkdir()
-    monkeypatch.setenv("RAG_DOCS_DIR", str(tmp_path / "docs"))
-    monkeypatch.setenv("RAG_INDEX_DIR", str(tmp_path / "index"))
-    monkeypatch.setenv("RAG_EMBED_PROVIDER", "hash")
-    monkeypatch.setenv("RAG_QDRANT_URL", "")
-
-
 def test_cli_add_from_subfolder_indexes_repo(cli_env, make_repo, tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path / "shop", {"docs/a.md": "# A\n\nalpha"}, origin="git@github.com:Acme/shop.git")
     monkeypatch.chdir(repo / "docs")
