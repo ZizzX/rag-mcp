@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from rag_mcp import cli, projects
+from rag_mcp.config import PROJECT_ROOT
 from rag_mcp.pipeline import Detection
 from rag_mcp.projects import Project, git_common_dir, match_registry, origin_of
 
@@ -141,6 +142,22 @@ def test_corrupt_registry_falls_back_to_name(pipeline, tmp_path):
     pipeline.ingest()
     (pipeline.settings.index_dir / "projects.json").write_text("{broken", encoding="utf-8")
     assert pipeline.detect_project([str(tmp_path / "code" / "team")]) == Detection("team", "name")
+
+
+# ---------- final review fixes ----------
+
+def test_name_rule_ignores_connected_projects(pipeline, make_repo, tmp_path):
+    repo = make_repo(tmp_path / "acme" / "backend", {"a.md": "a"}, origin="git@github.com:acme/backend.git")
+    pipeline.add_project(repo)
+    pipeline.ingest()
+    unrelated = make_repo(tmp_path / "beta" / "backend", {"a.md": "a"}, origin="git@github.com:beta/backend.git")
+    d = pipeline.detect_project([str(unrelated)])
+    assert d.project is None and "rag-mcp add" in d.hint
+
+
+def test_no_hint_where_add_would_refuse_or_index_rag_mcp_itself(pipeline, tmp_path):
+    for folder in (PROJECT_ROOT, PROJECT_ROOT / "src", Path.home(), Path(tmp_path.anchor), pipeline.settings.docs_dir):
+        assert pipeline.detect_project([str(folder)]) == Detection(), folder
 
 
 # ---------- CLI ----------

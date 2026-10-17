@@ -10,11 +10,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .chunking import chunk_document
-from .config import Settings, load_settings
+from .config import PROJECT_ROOT, Settings, load_settings
 from .embeddings import make_embedder
 from .loaders import doc_id_for, file_hash, iter_files, load_document
 from .projects import (
-    Project, ProjectError, RegistryError, _key, list_files, load_projects, match_registry, resolve_project, save_projects,
+    Project, ProjectError, RegistryError, _inside, _key, list_files, load_projects, match_registry, resolve_project,
+    save_projects,
 )
 from .store import HybridStore
 
@@ -278,8 +279,8 @@ class Pipeline:
     def detect_project(self, workspace_paths: list[str], explicit: str | None = None) -> Detection:
         """Map the client's workspace folder(s) to a project, first match wins: an explicit project,
         RAG_PROJECT, a connected project (path, origin or shared .git; see projects.match_registry)
-        for any folder, then an indexed top-level folder named like a folder or one of its parents.
-        Nothing matched → a hint on connecting the first folder."""
+        for any folder, then a project folder of docs_dir named like a folder or one of its parents.
+        Nothing matched → a hint on connecting the first folder, unless it is no place to connect."""
         try:
             connected = load_projects(self.settings.index_dir)
         except RegistryError:
@@ -301,7 +302,8 @@ class Pipeline:
             if match := self._registry_matches[key]:
                 project, how, note = match
                 return found(project.name, how, note)
-        indexed = set(self.store.projects())
+        # folders of docs_dir only: "backend" must not pull in someone else's connected repo named backend
+        indexed = set(self.store.projects()) - connected.keys()
         for raw in workspace_paths:
             path = Path(raw)
             for candidate in (path, *path.parents):
@@ -310,6 +312,12 @@ class Pipeline:
         if not workspace_paths:
             return Detection()
         folder = Path(workspace_paths[0])
+        # no advice where `add` would refuse (home, drive root, docs_dir) or index rag-mcp's own checkout
+        # (the cwd of a client without roots that starts the server with `uv --directory <repo>`)
+        if _key(folder) in (_key(Path.home()), _key(Path(folder.anchor))) or any(
+            _inside(folder, d) for d in (self.settings.docs_dir, PROJECT_ROOT)
+        ):
+            return Detection()
         return Detection(hint=f"{folder} is not connected to rag-mcp; run `rag-mcp add` in that folder to index "
                               "its documents")
 
