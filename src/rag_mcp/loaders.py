@@ -78,8 +78,8 @@ def markdown_title(text: str, fallback: str) -> str:
     return fallback
 
 
-def load_document(path: Path, docs_dir: Path) -> Document:
-    source = path.relative_to(docs_dir).as_posix()
+def load_document(path: Path, source: str) -> Document:
+    """`source` is the document's name in the index: its path under docs_dir, or `<project>/<path>`."""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         pages = load_pdf(path)

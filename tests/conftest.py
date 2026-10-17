@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -29,3 +30,26 @@ def pipeline(workspace):
         _env_file=None,
     )
     return Pipeline(settings)
+
+
+@pytest.fixture
+def make_repo():
+    """Factory for a throwaway git repository: make_repo(root, {"docs/a.md": "..."}, origin=...)."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    def make(root: Path, files: dict[str, str], origin: str | None = None, commit: bool = True) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        git = lambda *a: subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True)  # noqa: E731
+        git("init", "-q")
+        for name, text in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text, encoding="utf-8")
+        if origin:
+            git("remote", "add", "origin", origin)
+        if commit:
+            git("add", "-A")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+        return root
+
+    return make
