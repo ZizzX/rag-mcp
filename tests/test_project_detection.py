@@ -1,11 +1,12 @@
 """Which project a workspace folder belongs to: path, origin, shared .git, folder name."""
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from rag_mcp import projects
+from rag_mcp import cli, projects
 from rag_mcp.pipeline import Detection
 from rag_mcp.projects import Project, git_common_dir, match_registry, origin_of
 
@@ -140,3 +141,38 @@ def test_corrupt_registry_falls_back_to_name(pipeline, tmp_path):
     pipeline.ingest()
     (pipeline.settings.index_dir / "projects.json").write_text("{broken", encoding="utf-8")
     assert pipeline.detect_project([str(tmp_path / "code" / "team")]) == Detection("team", "name")
+
+
+# ---------- CLI ----------
+
+def test_cli_search_scopes_to_cwd_project(cli_env, make_repo, tmp_path, monkeypatch, capsys):
+    (tmp_path / "docs" / "team").mkdir()
+    (tmp_path / "docs" / "team" / "t.md").write_text("# T\n\nalpha in team", encoding="utf-8")
+    repo = make_repo(tmp_path / "shop", {"src/a.md": "# A\n\nalpha in shop"})
+    assert cli.main(["add", str(repo)]) == 0
+    monkeypatch.chdir(repo / "src")
+    capsys.readouterr()
+    assert cli.main(["search", "alpha", "--json"]) == 0
+    assert {r["source"] for r in json.loads(capsys.readouterr().out)} == {"shop/src/a.md"}
+    assert cli.main(["search", "alpha", "--all", "--json"]) == 0
+    assert {r["source"] for r in json.loads(capsys.readouterr().out)} == {"shop/src/a.md", "team/t.md"}
+    assert cli.main(["search", "alpha"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "scope: shop/ (matched by path)"
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["search", "alpha"]) == 0
+    first = capsys.readouterr().out.splitlines()[0]
+    assert first.startswith("scope: all projects") and "rag-mcp add" in first
+    with pytest.raises(SystemExit):
+        cli.main(["search", "alpha", "--all", "--project", "shop"])
+
+
+def test_cli_projects_marks_cwd_project(cli_env, make_repo, tmp_path, monkeypatch, capsys):
+    (tmp_path / "docs" / "team").mkdir()
+    (tmp_path / "docs" / "team" / "t.md").write_text("# T\n\nteam", encoding="utf-8")
+    repo = make_repo(tmp_path / "shop", {"docs/a.md": "# A\n\nalpha"})
+    assert cli.main(["add", str(repo)]) == 0
+    monkeypatch.chdir(repo / "docs")
+    capsys.readouterr()
+    assert cli.main(["projects"]) == 0
+    lines = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines()}
+    assert lines["shop"].endswith("  <- here") and not lines["team"].endswith("<- here")
