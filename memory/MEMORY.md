@@ -1,3 +1,6 @@
 - [git push https fails](git-push-https-no-credentials.md) — "could not read Username for https://github.com": push to git@github.com:ZizzX/rag-mcp.git directly
-- [pm CLI from Bash](pm-cli-from-bash.md) — pm is a zsh alias: in Bash tool run `node <plugins>/project-memory/scripts/pm.mjs <cmd>`
+- [pm CLI from Bash](pm-cli-from-bash.md) — pm is a zsh alias: `node $P <cmd>`; run from the project, not the board dir; `pm sync` offline → push board over ssh
 - [.env.example denied](env-example-denied.md) — any Bash call touching .env.example is denied whole; keep it separate, user edits it
+- [gh TLS in sandbox](sandbox-gh-tls.md) — "x509: OSStatus -26276" from gh in the Bash sandbox: rerun the gh command outside the sandbox
+- [squash merges](squash-merge-stacked-branch.md) — PRs here are squash-merged; stacked branch after base merge: `git rebase --onto origin/main <old base tip>`
+- [pytest output via RTK](rtk-pytest-output.md) — pytest shows only "Pytest: N passed"/empty grep: redirect output to a file to see failures
