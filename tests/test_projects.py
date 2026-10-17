@@ -7,7 +7,7 @@ import pytest
 
 from rag_mcp.chunking import project_of
 from rag_mcp.config import PROJECT_ROOT, Settings
-from rag_mcp.pipeline import Pipeline
+from rag_mcp.pipeline import Detection, Pipeline
 
 EXAMPLES = PROJECT_ROOT / "examples" / "docs"
 
@@ -53,16 +53,16 @@ def test_projects_listed(multi):
 
 def test_detect_project_walks_up_from_subfolder(multi):
     pipe, ws = multi
-    assert pipe.detect_project([str(ws / "shop-backend" / "src" / "api")]) == "shop-backend"
-    assert pipe.detect_project([str(ws / "shop-backend")]) == "shop-backend"
-    assert pipe.detect_project([str(ws / "unrelated")]) is None
-    assert pipe.detect_project([]) is None
+    assert pipe.detect_project([str(ws / "shop-backend" / "src" / "api")]) == Detection("shop-backend", "name")
+    assert pipe.detect_project([str(ws / "shop-backend")]) == Detection("shop-backend", "name")
+    assert pipe.detect_project([str(ws / "unrelated")]).project is None
+    assert pipe.detect_project([]) == Detection()
 
 
 def test_detect_project_override(multi):
     pipe, ws = multi
     pipe.settings.project = "mobile-app"
-    assert pipe.detect_project([str(ws / "shop-backend")]) == "mobile-app"
+    assert pipe.detect_project([str(ws / "shop-backend")]) == Detection("mobile-app", "env")
 
 
 def test_scope_includes_shared_folders_that_exist(multi):

@@ -2,11 +2,14 @@
 
 Transport is stdio, so never print to stdout from this process.
 
-Multi-project scoping: documents live in docs_dir/<project>/..., where <project>
-is the name of the project folder on disk. On each `search` the server asks the
-client for its workspace roots (Claude Code sends the folder it was started in),
-maps them to an indexed project, and scopes results to that project plus the
-shared folders (RAG_SHARED_PROJECTS, default "common"). Pass `all_projects=true`
+Multi-project scoping: documents live under <project>/... — folders of docs_dir, or
+project folders connected with `rag-mcp add`. On each `search` the server asks the
+client for its workspace roots (Claude Code sends the folder it was started in) and
+finds their project: inside a connected folder, same git origin (a second clone),
+same .git (a worktree anywhere), else a top-level folder with the same name (see
+Pipeline.detect_project). Results are scoped to that project plus the shared folders
+(RAG_SHARED_PROJECTS, default "common"); `scope.matched_by` says how it was found, and
+`scope.hint` how to connect the folder when nothing matched. Pass `all_projects=true`
 or an explicit `source_prefix` to override.
 """
 
@@ -150,14 +153,13 @@ async def resolve_scope(
             return {"mode": "all", "prefixes": None, "project": None,
                     "note": f"project '{project}' is not indexed; searched everything",
                     "projects": pipe.store.projects()}
-        return {"mode": "project", "prefixes": pipe.scope_for(project), "project": project}
+        return {"mode": "project", "prefixes": pipe.scope_for(project), "project": project,
+                **pipe.detect_project([], explicit=project).fields()}
     paths = await workspace_paths(ctx)
-    project = pipe.detect_project(paths)
-    prefixes = pipe.scope_for(project)
-    if project is None:
-        return {"mode": "all", "prefixes": None, "project": None, "workspace": paths,
-                "note": "workspace folder does not match any indexed project; searched everything"}
-    return {"mode": "project", "prefixes": prefixes, "project": project, "workspace": paths}
+    found = pipe.detect_project(paths)
+    mode = "project" if found.project else "all"
+    return {"mode": mode, "prefixes": pipe.scope_for(found.project), "project": found.project, "workspace": paths,
+            **found.fields()}
 
 
 @server.tool()
@@ -240,8 +242,8 @@ async def index_status(ctx: Context = None) -> str:  # type: ignore[assignment]
     pipe = pipeline()
     status = pipe.status()
     paths = await workspace_paths(ctx)
-    status["workspace"] = paths
-    status["detected_project"] = pipe.detect_project(paths)
+    found = pipe.detect_project(paths)
+    status |= {"workspace": paths, "detected_project": found.project, "matched_by": found.matched_by, **found.fields()}
     return json.dumps(status, ensure_ascii=False, indent=1)
 
 

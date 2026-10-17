@@ -6,14 +6,16 @@ import atexit
 import logging
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .chunking import chunk_document
 from .config import Settings, load_settings
 from .embeddings import make_embedder
 from .loaders import doc_id_for, file_hash, iter_files, load_document
-from .projects import Project, ProjectError, RegistryError, list_files, load_projects, resolve_project, save_projects
+from .projects import (
+    Project, ProjectError, RegistryError, _key, list_files, load_projects, match_registry, resolve_project, save_projects,
+)
 from .store import HybridStore
 
 log = logging.getLogger("rag_mcp")
@@ -60,11 +62,28 @@ class SourceScan:
         return not self.docs_dir_found  # unmounted drive, wrong RAG_DOCS_DIR
 
 
+@dataclass
+class Detection:
+    """Which project a search is about, and how it was found (see Pipeline.detect_project)."""
+
+    project: str | None = None
+    matched_by: str | None = None  # explicit | env | path | origin | git_dir | name
+    docs_from: str | None = None  # folder of the connected project, unless the workspace is inside it
+    note: str | None = None
+    hint: str | None = None  # nothing matched: how to connect the workspace folder
+
+    def fields(self) -> dict:
+        """Everything but the project name that has a value, for JSON responses."""
+        return {k: v for k, v in asdict(self).items() if v is not None and k != "project"}
+
+
 class Pipeline:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
         self.embedder = make_embedder(self.settings)
         self.store = self._open_store()
+        # match_registry runs git; keyed by (folder, registry contents) so a changed registry is seen at once
+        self._registry_matches: dict[tuple, tuple | None] = {}
         atexit.register(self.store.close)
 
     def _open_store(self) -> HybridStore:
@@ -256,24 +275,43 @@ class Pipeline:
         )
 
     # ---------- multi-project scoping ----------
-    def detect_project(self, workspace_paths: list[str]) -> str | None:
-        """Map the client's workspace folder(s) to an indexed project.
+    def detect_project(self, workspace_paths: list[str], explicit: str | None = None) -> Detection:
+        """Map the client's workspace folder(s) to a project, first match wins: an explicit project,
+        RAG_PROJECT, a connected project (path, origin or shared .git; see projects.match_registry)
+        for any folder, then an indexed top-level folder named like a folder or one of its parents.
+        Nothing matched → a hint on connecting the first folder."""
+        try:
+            connected = load_projects(self.settings.index_dir)
+        except RegistryError:
+            connected = {}  # ingest refuses until it is fixed; detection by name still works
 
-        Walks up from each path and returns the first ancestor whose folder name is an
-        indexed top-level folder, so a subfolder of a project still resolves to it.
-        RAG_PROJECT overrides detection.
-        """
+        def found(name: str, how: str, note: str | None = None) -> Detection:
+            p = connected.get(name)
+            return Detection(name, how, str(p.path) if p and how != "path" else None, note)
+
+        if explicit:
+            return found(explicit, "explicit")
         if self.settings.project:
-            return self.settings.project
+            return found(self.settings.project, "env")
+        signature = tuple((p.name, str(p.path), p.origin, str(p.git_dir)) for p in connected.values())
+        for raw in workspace_paths:
+            key = (_key(Path(raw)), signature)
+            if key not in self._registry_matches:
+                self._registry_matches[key] = match_registry(Path(raw), connected) if connected else None
+            if match := self._registry_matches[key]:
+                project, how, note = match
+                return found(project.name, how, note)
         indexed = set(self.store.projects())
-        if not indexed:
-            return None
         for raw in workspace_paths:
             path = Path(raw)
             for candidate in (path, *path.parents):
                 if candidate.name in indexed:
-                    return candidate.name
-        return None
+                    return found(candidate.name, "name")
+        if not workspace_paths:
+            return Detection()
+        folder = Path(workspace_paths[0])
+        return Detection(hint=f"{folder} is not connected to rag-mcp; run `rag-mcp add` in that folder to index "
+                              "its documents")
 
     def scope_for(self, project: str | None) -> list[str] | None:
         """Prefixes to search for a project: the project itself plus shared folders that exist."""

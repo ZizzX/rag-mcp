@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from rag_mcp import projects
+from rag_mcp.pipeline import Detection
 from rag_mcp.projects import Project, git_common_dir, match_registry, origin_of
 
 ORIGIN = "git@github.com:Acme/shop.git"
@@ -80,3 +81,62 @@ def test_without_git_only_path_matches(make_repo, tmp_path, monkeypatch, failure
     monkeypatch.setattr(projects.subprocess, "run", broken)
     assert match_registry(wt, connected) is None
     assert match_registry(repo / "src", connected)[1] == "path"
+
+
+# ---------- Pipeline.detect_project ----------
+
+def add_team_folder(pipeline):
+    (pipeline.settings.docs_dir / "team").mkdir()
+    (pipeline.settings.docs_dir / "team" / "t.md").write_text("# T\n\nteam", encoding="utf-8")
+
+
+def test_detect_order_and_docs_from(pipeline, make_repo, tmp_path):
+    add_team_folder(pipeline)
+    repo = make_repo(tmp_path / "team" / "shop-repo", {"src/a.md": "a"})  # parent named like a docs folder
+    pipeline.add_project(repo, "shop")
+    pipeline.ingest()
+    src = str(repo / "src")
+    assert pipeline.detect_project([src]) == Detection("shop", "path")
+    wt = worktree(repo, tmp_path / "orca" / "ATS-3010")
+    assert pipeline.detect_project([str(wt)]) == Detection("shop", "git_dir", docs_from=str(repo.resolve()))
+    assert pipeline.detect_project([str(tmp_path / "code" / "team" / "x")]) == Detection("team", "name")
+    assert pipeline.detect_project([str(tmp_path / "code" / "team"), src]) == Detection("shop", "path")
+    assert pipeline.detect_project([], explicit="shop") == Detection("shop", "explicit", str(repo.resolve()))
+    pipeline.settings.project = "team"
+    assert pipeline.detect_project([src]) == Detection("team", "env")
+
+
+def test_no_match_gives_hint(pipeline, tmp_path):
+    missing = str(tmp_path / "missing")
+    d = pipeline.detect_project([missing])
+    assert (d.project, d.matched_by) == (None, None)
+    assert missing in d.hint and "rag-mcp add" in d.hint
+    assert pipeline.detect_project([]) == Detection()
+
+
+def test_cache_reruns_git_only_after_registry_changes(pipeline, make_repo, tmp_path, monkeypatch):
+    repo = make_repo(tmp_path / "shop", {"a.md": "a"}, origin=ORIGIN)
+    other = make_repo(tmp_path / "other", {"a.md": "a"}, origin="git@github.com:Acme/other.git")
+    pipeline.add_project(repo)
+    timeouts = []
+    real_run = subprocess.run
+
+    def run(cmd, *a, **kw):
+        timeouts.append(kw.get("timeout"))
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(projects.subprocess, "run", run)
+    assert pipeline.detect_project([str(other)]).project is None
+    assert timeouts and set(timeouts) == {2}
+    n = len(timeouts)
+    assert pipeline.detect_project([str(other)]).project is None
+    assert len(timeouts) == n  # cached: git is not run again for the same folder
+    pipeline.add_project(other)  # the registry changed
+    assert pipeline.detect_project([str(other)]) == Detection("other", "path")
+
+
+def test_corrupt_registry_falls_back_to_name(pipeline, tmp_path):
+    add_team_folder(pipeline)
+    pipeline.ingest()
+    (pipeline.settings.index_dir / "projects.json").write_text("{broken", encoding="utf-8")
+    assert pipeline.detect_project([str(tmp_path / "code" / "team")]) == Detection("team", "name")
