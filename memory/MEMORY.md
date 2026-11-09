@@ -4,3 +4,4 @@
 - [gh TLS in sandbox](sandbox-gh-tls.md) — "x509: OSStatus -26276" from gh in the Bash sandbox: rerun the gh command outside the sandbox
 - [squash merges](squash-merge-stacked-branch.md) — PRs here are squash-merged; stacked branch after base merge: `git rebase --onto origin/main <old base tip>`
 - [pytest output via RTK](rtk-pytest-output.md) — pytest shows only "Pytest: N passed"/empty grep: redirect output to a file to see failures
+- [eval on real notes](eval-real-notes-2026-11.md) — 2026-11-09: nomic hybrid < grep, bge-m3 hybrid best; questions in eval/questions.jsonl
