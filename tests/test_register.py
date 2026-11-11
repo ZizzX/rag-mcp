@@ -241,3 +241,9 @@ def test_cli_refuses_to_register_a_worktree(env, tmp_path, monkeypatch, capsys):
     assert main(["register", "--cursor", "--allow-worktree"]) == 0
     assert (env.home / ".cursor" / "mcp.json").exists()
     assert main(["unregister", "--cursor"]) == 0  # removing never needs the main checkout
+
+
+def test_desktop_step_warns_about_running_app(env):
+    step = reg.register_client("claude-desktop", env)[0]
+    assert step.status == "added" and "quit it" in step.detail
+    assert "quit it" not in reg.register_client("claude-desktop", env)[0].detail  # unchanged: no note

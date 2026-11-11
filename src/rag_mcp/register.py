@@ -80,6 +80,9 @@ CLAUDE_MD_BLOCK = f"""\
 """
 _BLOCK_RE = re.compile(re.escape(BLOCK_BEGIN) + r".*?" + re.escape(BLOCK_END) + r"[ \t]*\n?", re.S)
 
+# Claude Desktop keeps its config in memory and writes it back over outside edits while it runs.
+DESKTOP_NOTE = "if Claude Desktop was running, it may overwrite this: quit it, rerun register, then start it"
+
 CLIENTS = ("claude-code", "cursor", "claude-desktop")
 LABELS = {"claude-code": "Claude Code", "cursor": "Cursor", "claude-desktop": "Claude Desktop"}
 
@@ -325,7 +328,10 @@ def register_client(client: str, env: Env, *, rules: bool = True, dry_run: bool 
             if rules:
                 steps.append(skill_add(env.home / ".cursor" / "skills" / SERVER_NAME, client, dry_run, force))
         elif client == "claude-desktop":
-            steps.append(json_server_add(env.desktop_config(), client, env, dry_run))
+            step = json_server_add(env.desktop_config(), client, env, dry_run)
+            if step.status in ("added", "updated"):
+                step.detail += f"; {DESKTOP_NOTE}"
+            steps.append(step)
         else:
             raise ValueError(client)
     except (ConfigError, OSError) as e:
