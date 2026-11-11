@@ -29,7 +29,7 @@ def _timeout(seconds: float) -> httpx.Timeout:
 
 
 class OllamaEmbedder:
-    """Uses the local Ollama server. Pull a model first: `ollama pull nomic-embed-text`."""
+    """Uses the local Ollama server. Pull a model first: `ollama pull bge-m3`."""
 
     def __init__(self, base_url: str, model: str, batch_size: int = 32, timeout: float = 120.0):
         self.name = f"ollama:{model}"

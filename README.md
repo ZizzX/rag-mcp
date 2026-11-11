@@ -36,8 +36,11 @@ uv run rag-mcp status
 ## Требования
 
 - [Ollama](https://ollama.com) запущен (для эмбеддингов). Модель по умолчанию
-  `nomic-embed-text`; для русского лучше `bge-m3`: `ollama pull bge-m3` и
-  `RAG_EMBED_MODEL=bge-m3` в `.env`.
+  `bge-m3` (многоязычная, ~1.2 ГБ, `ollama pull bge-m3`); установщик скачивает её
+  сам. На русских заметках она находит заметно лучше `nomic-embed-text`. Кому
+  нужна модель полегче: `RAG_EMBED_MODEL=nomic-embed-text` в `.env`.
+  Сменили модель (в том числе обновились с версии, где по умолчанию был
+  `nomic-embed-text`): `uv run rag-mcp ingest --rebuild`.
 - Docker Desktop не обязателен. Индекс по умолчанию это обычные файлы в
   `data/index` (`manifest.json`, `bm25.json`, `vectors.npy`), векторный поиск
   полным перебором через numpy. Индекс одновременно читают сколько угодно

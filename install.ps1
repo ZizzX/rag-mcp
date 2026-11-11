@@ -38,7 +38,7 @@ function EnvValue($name, $default) {
     $line = Select-String -Path .env -Pattern "^$name=" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($line) { return $line.Line.Substring($name.Length + 1) } else { return $default }
 }
-$EmbedModel = EnvValue "RAG_EMBED_MODEL" "nomic-embed-text"
+$EmbedModel = EnvValue "RAG_EMBED_MODEL" "bge-m3"
 $Provider   = EnvValue "RAG_EMBED_PROVIDER" "ollama"
 if (-not $NoOllama -and $Provider -eq "ollama") {
     if (Get-Command ollama -ErrorAction SilentlyContinue) {
