@@ -200,7 +200,7 @@ uv run rag-mcp unregister               # убрать всё, что поста
 |---|---|---|
 | Claude Code | `claude` в PATH или есть `~/.claude` | сервер на уровне пользователя (`claude mcp add -s user`); скилл `~/.claude/skills/rag-mcp/SKILL.md`; блок из двух строк в `~/.claude/CLAUDE.md` |
 | Cursor | есть `~/.cursor` | `mcpServers["rag-mcp"]` в `~/.cursor/mcp.json`; тот же скилл в `~/.cursor/skills/rag-mcp/SKILL.md` |
-| Claude Desktop | есть папка его конфига | `mcpServers["rag-mcp"]` в `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`, Linux: `~/.config/Claude/`); скиллы Desktop ставятся через его интерфейс, правило он получает из инструкций сервера |
+| Claude Desktop | есть папка его конфига | `mcpServers["rag-mcp"]` в `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`, Linux: `~/.config/Claude/`); скиллы Desktop ставятся через его интерфейс, правило он получает из инструкций сервера. Запущенный Desktop перезаписывает свой конфиг из памяти: закройте его, выполните `register`, потом откройте |
 
 Скилл говорит агенту: решения, чекпоинты, планы и ретро прошлых сессий, заметки
 по подключённым проектам сначала искать через `search`, а grep оставить для
