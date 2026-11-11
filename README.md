@@ -18,9 +18,11 @@ git clone https://github.com/ZizzX/rag-mcp.git && cd rag-mcp
 ```
 
 Установщик ставит `uv` (он сам скачает нужный Python), зависимости из
-`uv.lock`, создаёт `.env`, тянет модель эмбеддингов в Ollama и регистрирует
-MCP-сервер в Claude Code. Повторный запуск безопасен: после `git pull`
-просто запустите его ещё раз.
+`uv.lock`, создаёт `.env`, тянет модель эмбеддингов в Ollama и через
+`rag-mcp register` подключает сервер к Claude Code, Cursor и Claude Desktop
+(спрашивает про каждый найденный клиент; `--yes` / `-Yes` без вопросов,
+`--no-claude` / `-NoClaude` пропустить). Повторный запуск безопасен: после
+`git pull` просто запустите его ещё раз.
 
 Дальше:
 
@@ -31,7 +33,9 @@ uv run rag-mcp status
 ```
 
 В Claude Code наберите `/mcp`: сервер `rag-mcp` должен быть в списке. После
-этого просто задавайте вопросы по документам, Claude сам вызовет `search`.
+этого просто задавайте вопросы по документам, Claude сам вызовет `search`:
+`register` ставит ему скилл с правилом, когда искать в заметках раньше grep
+(см. [Подключение к агентам](#подключение-к-агентам)).
 
 ### Установка на новом устройстве (пошагово, в том числе для агента)
 
@@ -40,7 +44,8 @@ uv run rag-mcp status
 2. `git clone https://github.com/ZizzX/rag-mcp.git && cd rag-mcp`, затем
    `./install.sh` (Windows: `.\install.ps1`). Он создаст `.env` из
    `.env.example`, скачает модель эмбеддингов и зарегистрирует сервер в
-   Claude Code на уровне пользователя (`claude mcp add -s user`).
+   найденных клиентах (`rag-mcp register`: Claude Code на уровне пользователя,
+   Cursor, Claude Desktop) вместе со скиллом для агента.
 3. Подключить папки с документами: `uv run rag-mcp add /путь/к/заметкам --name notes`
    (по одной команде на папку; имя станет префиксом `notes/` в результатах).
    Документы можно и положить в `data/docs` или указать `RAG_DOCS_DIR`, тогда
@@ -84,6 +89,8 @@ uv run rag-mcp status
 | `rag-mcp remove ИМЯ` | отключить проект и убрать его документы из индекса (файлы на диске не трогает) |
 | `rag-mcp projects` | подключённые проекты и папки проектов внутри `RAG_DOCS_DIR`; текущий проект помечен |
 | `rag-mcp eval [eval/questions.jsonl] [-k N]` | hit-rate и MRR по золотому набору вопросов |
+| `rag-mcp register [--claude-code] [--cursor] [--claude-desktop] [--all] [-y] [--no-rules] [--dry-run] [--force] [--allow-worktree]` | подключить сервер к агентам и поставить скилл; см. [Подключение к агентам](#подключение-к-агентам) |
+| `rag-mcp unregister [--claude-code] [--cursor] [--claude-desktop] [--all] [-y] [--dry-run]` | убрать всё, что поставил `register` |
 
 Инструменты MCP: `search` (параметры `project`, `source_prefix`, `all_projects`), `fetch_document`, `list_sources`, `index_status`, `reindex` (инкрементальный ingest, `rebuild=true` для полной пересборки).
 
@@ -174,7 +181,54 @@ rag-docs/
 отдельный для кода и отдельный для документов, их проще держать как разные
 конфиги `.env` и разные коллекции (`RAG_COLLECTION`), а не как разные репозитории.
 
-## Ручная регистрация MCP (другие клиенты)
+## Подключение к агентам
+
+Одного MCP-сервера мало: агент не знает, что в заметках есть решения и планы
+прошлых сессий, и ищет grep'ом. `rag-mcp register` подключает сервер и ставит
+агенту правило, когда искать через `search` раньше grep и когда вызывать
+`reindex`.
+
+```bash
+uv run rag-mcp register                 # спросит про каждый найденный клиент
+uv run rag-mcp register --yes           # все найденные без вопросов (без терминала так же)
+uv run rag-mcp register --cursor        # только названные клиенты; --all — все три
+uv run rag-mcp register --dry-run       # показать, что изменится, ничего не писать
+uv run rag-mcp unregister               # убрать всё, что поставил register
+```
+
+| Клиент | Найден, если | Что ставится |
+|---|---|---|
+| Claude Code | `claude` в PATH или есть `~/.claude` | сервер на уровне пользователя (`claude mcp add -s user`); скилл `~/.claude/skills/rag-mcp/SKILL.md`; блок из двух строк в `~/.claude/CLAUDE.md` |
+| Cursor | есть `~/.cursor` | `mcpServers["rag-mcp"]` в `~/.cursor/mcp.json`; тот же скилл в `~/.cursor/skills/rag-mcp/SKILL.md` |
+| Claude Desktop | есть папка его конфига | `mcpServers["rag-mcp"]` в `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`, Linux: `~/.config/Claude/`); скиллы Desktop ставятся через его интерфейс, правило он получает из инструкций сервера |
+
+Скилл говорит агенту: решения, чекпоинты, планы и ретро прошлых сессий, заметки
+по подключённым проектам сначала искать через `search`, а grep оставить для
+текущего кода; если ничего не нашлось, повторить с `all_projects=true`; при
+`degraded` пустой ответ ничего не доказывает; после новых или изменённых
+заметок вызвать `reindex`. `--no-rules` ставит только сервер.
+
+Повторный запуск ничего не дублирует:
+
+- файл пишется, только если меняется содержимое;
+- в JSON-конфигах меняется только `mcpServers["rag-mcp"]`, остальные серверы и
+  ваш `env` у записи `rag-mcp` сохраняются, перед записью делается бэкап
+  `<файл>.bak-<дата>`; невалидный JSON не перезаписывается;
+- блок в `CLAUDE.md` стоит между маркерами `<!-- rag-mcp:begin … -->` и
+  `<!-- rag-mcp:end -->` и заменяется на месте, остальной файл не трогается;
+- `SKILL.md`, написанный не `register` (без его пометки), не перезаписывается и
+  не удаляется без `--force`;
+- уже зарегистрированный в Claude Code сервер этой копии репозитория
+  остаётся как есть, вместе с вашими `-e RAG_...`; `--force` переподключит.
+
+Сервер запускается командой `<абсолютный путь к uv> --directory <эта папка> run
+rag-mcp serve`: GUI-приложения не видят PATH терминала. Запускайте `register`
+из той копии репозитория, которую должны использовать клиенты. Из git worktree
+команда отказывается и подсказывает путь к основной копии: worktree временная,
+и клиенты сломались бы после её удаления (`--allow-worktree`, если так и надо). После
+регистрации перезапустите клиенты или откройте новую сессию.
+
+### Ручная регистрация MCP
 
 Claude Desktop (`claude_desktop_config.json`) или Cursor:
 
@@ -214,6 +268,7 @@ src/rag_mcp/
   pipeline.py   инкрементальный ингест и поиск
   server.py     MCP-сервер (stdio)
   evaluate.py   hit-rate и MRR по eval/questions.jsonl
+  register.py   register / unregister: конфиги клиентов, скилл, блок CLAUDE.md
   cli.py        команды
 ```
 

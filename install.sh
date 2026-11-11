@@ -2,17 +2,19 @@
 # rag-mcp installer for macOS and Linux.
 # Idempotent: safe to run again after `git pull`.
 #
-#   ./install.sh                 # install, create .env, pull the Ollama model, register in Claude Code
-#   ./install.sh --no-claude     # skip Claude Code registration
+#   ./install.sh                 # install, create .env, pull the Ollama model, register in agent clients
+#   ./install.sh --yes           # register in every client found without asking
+#   ./install.sh --no-claude     # skip client registration (Claude Code, Cursor, Claude Desktop)
 #   ./install.sh --no-ollama     # skip pulling the embedding model
 set -euo pipefail
 
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
-NO_CLAUDE=0; NO_OLLAMA=0
+NO_CLAUDE=0; NO_OLLAMA=0; YES=""
 for a in "$@"; do
   case "$a" in
     --no-claude) NO_CLAUDE=1 ;;
+    -y|--yes) YES="--yes" ;;
     --no-ollama) NO_OLLAMA=1 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
@@ -51,11 +53,11 @@ if [ "$NO_OLLAMA" = 0 ] && [ "$PROVIDER" = ollama ]; then
   fi
 fi
 
-# 5. Register the MCP server in Claude Code (user scope: available in every project)
-if [ "$NO_CLAUDE" = 0 ] && command -v claude >/dev/null 2>&1; then
-  say "Registering MCP server 'rag-mcp' in Claude Code (user scope)"
-  claude mcp remove -s user rag-mcp >/dev/null 2>&1 || true
-  claude mcp add -s user rag-mcp -- uv --directory "$ROOT" run rag-mcp serve
+# 5. Register the MCP server and the agent skill in Claude Code, Cursor, Claude Desktop
+#    (asks about each client found; safe to repeat; undo with `uv run rag-mcp unregister`)
+if [ "$NO_CLAUDE" = 0 ]; then
+  say "Registering rag-mcp in agent clients"
+  uv run rag-mcp register $YES || echo "WARN: registration failed; rerun: uv run rag-mcp register" >&2
 fi
 
 cat <<MSG
@@ -65,7 +67,8 @@ Done. Next steps:
   2. uv run rag-mcp ingest
   3. uv run rag-mcp search "your question"
   4. In Claude Code: /mcp  (rag-mcp should be listed), then just ask questions about your docs.
+     Clients: uv run rag-mcp register [--claude-code|--cursor|--claude-desktop]  (undo: uv run rag-mcp unregister)
 
-Manual MCP config for other clients (Claude Desktop, Cursor):
+Manual MCP config for other clients:
   command: uv   args: ["--directory", "$ROOT", "run", "rag-mcp", "serve"]
 MSG

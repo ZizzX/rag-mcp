@@ -35,12 +35,14 @@ log = logging.getLogger("rag_mcp.server")
 
 INSTRUCTIONS = (
     "Local knowledge base built from the user's Markdown and PDF documents, organised as one "
-    "folder per project plus shared folders. `search` automatically scopes to the project the "
+    "folder per project plus shared folders. When you need context from earlier work (decisions, "
+    "plans, checkpoints, retros, notes about a project), call `search` BEFORE grep or reading files: "
+    "it matches by meaning across folders and sessions. `search` automatically scopes to the project the "
     "client is currently working in (based on its workspace folder) plus shared docs; the "
     "response says which scope was used. Cite `source` (and `page` when present) in answers. "
     "Use `fetch_document` when a passage is cut off. Use `index_status` to see indexed projects "
     "and the detected one; pass `all_projects=true` to search everything. Call `reindex` after "
-    "the user adds or edits documents."
+    "you or the user add or edit documents, before searching for them."
 )
 
 server = MCPServer("rag-mcp", instructions=INSTRUCTIONS)

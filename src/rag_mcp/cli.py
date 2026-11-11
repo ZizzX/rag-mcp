@@ -1,4 +1,4 @@
-"""Command line: rag-mcp ingest | search | serve | eval | status | add | remove | projects"""
+"""Command line: rag-mcp ingest | search | serve | eval | status | add | remove | projects | register | unregister"""
 
 from __future__ import annotations
 
@@ -52,6 +52,24 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("questions", nargs="?", default=str(PROJECT_ROOT / "eval" / "questions.jsonl"))
     e.add_argument("-k", "--top-k", type=int, default=5)
 
+    for name, help_ in (
+        ("register", "connect the MCP server to Claude Code, Cursor, Claude Desktop and install the agent skill"),
+        ("unregister", "undo `register`: remove the MCP entry, the skill and the CLAUDE.md block"),
+    ):
+        g = sub.add_parser(name, help=help_)
+        g.add_argument("--claude-code", action="append_const", const="claude-code", dest="clients")
+        g.add_argument("--cursor", action="append_const", const="cursor", dest="clients")
+        g.add_argument("--claude-desktop", action="append_const", const="claude-desktop", dest="clients")
+        g.add_argument("--all", action="store_true", help="every supported client, found or not")
+        g.add_argument("-y", "--yes", action="store_true", help="no questions: every client found")
+        g.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
+        if name == "register":
+            g.add_argument("--no-rules", action="store_true", help="only the MCP server: no skill, no CLAUDE.md block")
+            g.add_argument("--force", action="store_true",
+                           help="re-add the Claude Code server and replace a SKILL.md not written by rag-mcp")
+            g.add_argument("--allow-worktree", action="store_true",
+                           help="register even though this checkout is a git worktree")
+
     args = p.parse_args(argv)
     configure_logging(args.verbose)
 
@@ -60,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
 
         run()
         return 0
+
+    if args.cmd in ("register", "unregister"):
+        return _register(args)
 
     pipe = Pipeline()
     try:
@@ -70,6 +91,46 @@ def main(argv: list[str] | None = None) -> int:
     except IndexBusy as e:
         print(e, file=sys.stderr)
         return 1
+
+
+def _register(args: argparse.Namespace) -> int:
+    from . import register as reg
+
+    env = reg.Env()
+    adding = args.cmd == "register"
+    main_checkout = env.main_checkout() if adding else None
+    if main_checkout and not args.allow_worktree:
+        msg = (
+            f"{env.repo} is a git worktree: clients would run the server from it and break once it is removed.\n"
+            f"Register from the main checkout instead: cd {main_checkout} && uv run rag-mcp register\n"
+            "(--allow-worktree to register this worktree anyway)"
+        )
+        if not args.dry_run:
+            print(msg, file=sys.stderr)
+            return 2
+        print("WARNING: " + msg, file=sys.stderr)
+    clients = reg.choose_clients(
+        args.clients or [], env, every=args.all, yes=args.yes, interactive=sys.stdin.isatty(),
+        verb="Register rag-mcp in" if adding else "Remove rag-mcp from",
+    )
+    if not clients:
+        print("No clients selected (none found?). Name one: --claude-code, --cursor, --claude-desktop.")
+        return 0
+    if adding:
+        print(f"server: {env.server_entry()['command']} {' '.join(env.server_entry()['args'])}")
+    steps = []
+    for c in clients:
+        if adding:
+            steps += reg.register_client(c, env, rules=not args.no_rules, dry_run=args.dry_run, force=args.force)
+        else:
+            steps += reg.unregister_client(c, env, dry_run=args.dry_run)
+    for s in steps:
+        print(s.line())
+    if args.dry_run:
+        print("dry run: nothing was written")
+    elif adding and any(s.status in ("added", "updated") for s in steps):
+        print("Restart the clients (or start a new session) so they pick up the server and the skill.")
+    return 1 if any(s.status == "error" for s in steps) else 0
 
 
 def _print_report(r: IngestReport, pipe: Pipeline) -> int:
