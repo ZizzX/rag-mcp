@@ -67,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
             g.add_argument("--no-rules", action="store_true", help="only the MCP server: no skill, no CLAUDE.md block")
             g.add_argument("--force", action="store_true",
                            help="re-add the Claude Code server and replace a SKILL.md not written by rag-mcp")
+            g.add_argument("--allow-worktree", action="store_true",
+                           help="register even though this checkout is a git worktree")
 
     args = p.parse_args(argv)
     configure_logging(args.verbose)
@@ -96,6 +98,17 @@ def _register(args: argparse.Namespace) -> int:
 
     env = reg.Env()
     adding = args.cmd == "register"
+    main_checkout = env.main_checkout() if adding else None
+    if main_checkout and not args.allow_worktree:
+        msg = (
+            f"{env.repo} is a git worktree: clients would run the server from it and break once it is removed.\n"
+            f"Register from the main checkout instead: cd {main_checkout} && uv run rag-mcp register\n"
+            "(--allow-worktree to register this worktree anyway)"
+        )
+        if not args.dry_run:
+            print(msg, file=sys.stderr)
+            return 2
+        print("WARNING: " + msg, file=sys.stderr)
     clients = reg.choose_clients(
         args.clients or [], env, every=args.all, yes=args.yes, interactive=sys.stdin.isatty(),
         verb="Register rag-mcp in" if adding else "Remove rag-mcp from",

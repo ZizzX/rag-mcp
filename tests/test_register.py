@@ -205,3 +205,39 @@ def test_cli_dry_run(env, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[ok] Cursor: mcp added" in out and "dry run" in out
     assert not (env.home / ".cursor" / "mcp.json").exists()
+
+
+def make_worktree(env, tmp_path):
+    main_repo = tmp_path / "main"
+    gitdir = main_repo / ".git" / "worktrees" / "wt"
+    gitdir.mkdir(parents=True)
+    env.repo.mkdir(parents=True, exist_ok=True)
+    (env.repo / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    return main_repo
+
+
+def test_main_checkout_detection(env, tmp_path):
+    env.repo.mkdir(parents=True)
+    assert env.main_checkout() is None
+    (env.repo / ".git").mkdir()
+    assert env.main_checkout() is None  # the main checkout itself
+    (env.repo / ".git").rmdir()
+    (env.repo / ".git").write_text("gitdir: ../super/.git/modules/rag-mcp\n", encoding="utf-8")
+    assert env.main_checkout() is None  # a submodule is not a worktree
+    assert make_worktree(env, tmp_path) == tmp_path / "main"
+
+
+def test_cli_refuses_to_register_a_worktree(env, tmp_path, monkeypatch, capsys):
+    main_repo = make_worktree(env, tmp_path)
+    monkeypatch.setattr(reg, "Env", lambda: env)
+    assert main(["register", "--cursor"]) == 2
+    err = capsys.readouterr().err
+    assert "git worktree" in err and f"cd {main_repo}" in err
+    assert not (env.home / ".cursor" / "mcp.json").exists()
+
+    assert main(["register", "--cursor", "--dry-run"]) == 0
+    assert "WARNING" in capsys.readouterr().err
+
+    assert main(["register", "--cursor", "--allow-worktree"]) == 0
+    assert (env.home / ".cursor" / "mcp.json").exists()
+    assert main(["unregister", "--cursor"]) == 0  # removing never needs the main checkout

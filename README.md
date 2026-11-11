@@ -89,7 +89,7 @@ uv run rag-mcp status
 | `rag-mcp remove ИМЯ` | отключить проект и убрать его документы из индекса (файлы на диске не трогает) |
 | `rag-mcp projects` | подключённые проекты и папки проектов внутри `RAG_DOCS_DIR`; текущий проект помечен |
 | `rag-mcp eval [eval/questions.jsonl] [-k N]` | hit-rate и MRR по золотому набору вопросов |
-| `rag-mcp register [--claude-code] [--cursor] [--claude-desktop] [--all] [-y] [--no-rules] [--dry-run] [--force]` | подключить сервер к агентам и поставить скилл; см. [Подключение к агентам](#подключение-к-агентам) |
+| `rag-mcp register [--claude-code] [--cursor] [--claude-desktop] [--all] [-y] [--no-rules] [--dry-run] [--force] [--allow-worktree]` | подключить сервер к агентам и поставить скилл; см. [Подключение к агентам](#подключение-к-агентам) |
 | `rag-mcp unregister [--claude-code] [--cursor] [--claude-desktop] [--all] [-y] [--dry-run]` | убрать всё, что поставил `register` |
 
 Инструменты MCP: `search` (параметры `project`, `source_prefix`, `all_projects`), `fetch_document`, `list_sources`, `index_status`, `reindex` (инкрементальный ingest, `rebuild=true` для полной пересборки).
@@ -223,7 +223,9 @@ uv run rag-mcp unregister               # убрать всё, что поста
 
 Сервер запускается командой `<абсолютный путь к uv> --directory <эта папка> run
 rag-mcp serve`: GUI-приложения не видят PATH терминала. Запускайте `register`
-из той копии репозитория, которую должны использовать клиенты. После
+из той копии репозитория, которую должны использовать клиенты. Из git worktree
+команда отказывается и подсказывает путь к основной копии: worktree временная,
+и клиенты сломались бы после её удаления (`--allow-worktree`, если так и надо). После
 регистрации перезапустите клиенты или откройте новую сессию.
 
 ### Ручная регистрация MCP

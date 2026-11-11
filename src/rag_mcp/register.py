@@ -120,6 +120,26 @@ class Env:
             found.append("claude-desktop")
         return found
 
+    def main_checkout(self) -> Path | None:
+        """The main checkout when `repo` is a linked git worktree (its `.git` is a file), else None.
+
+        A worktree is usually temporary: registering it would point every client at a folder
+        that disappears with the worktree.
+        """
+        marker = self.repo / ".git"
+        if not marker.is_file():
+            return None
+        text = marker.read_text(encoding="utf-8", errors="replace").strip()
+        if not text.startswith("gitdir:"):
+            return None
+        gitdir = Path(text[len("gitdir:") :].strip())
+        if not gitdir.is_absolute():
+            gitdir = (self.repo / gitdir).resolve()
+        # <main>/.git/worktrees/<name>; a submodule (<super>/.git/modules/<name>) is not a worktree.
+        if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+            return None
+        return gitdir.parent.parent.parent
+
     def server_entry(self) -> dict:
         # GUI apps do not see the terminal's PATH, so prefer the absolute path to uv.
         return {"command": self.which("uv") or "uv", "args": ["--directory", str(self.repo), "run", "rag-mcp", "serve"]}
