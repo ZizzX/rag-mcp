@@ -6,3 +6,4 @@
 - [pytest output via RTK](rtk-pytest-output.md) — pytest shows only "Pytest: N passed"/empty grep: redirect output to a file to see failures
 - [eval on real notes](eval-real-notes-2026-11.md) — 2026-11-09: nomic hybrid < grep, bge-m3 hybrid best; questions in eval/questions.jsonl
 - [rag-mcp clients here](register-clients-choice.md) — user declined Cursor; register only --claude-code on this Mac, ask before Desktop (quit it first)
+- [no auto-merge](pr-merge-no-automerge.md) — repo disallows auto-merge: background `gh pr checks --watch` then `gh pr merge --squash`; approval per PR
