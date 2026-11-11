@@ -2,9 +2,11 @@
 # Idempotent: safe to run again after `git pull`.
 #
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
-#   .\install.ps1 -NoClaude      # skip Claude Code registration
+#   .\install.ps1 -Yes           # register in every client found without asking
+#   .\install.ps1 -NoClaude      # skip client registration (Claude Code, Cursor, Claude Desktop)
 #   .\install.ps1 -NoOllama      # skip pulling the embedding model
 param(
+    [switch]$Yes,
     [switch]$NoClaude,
     [switch]$NoOllama
 )
@@ -49,11 +51,14 @@ if (-not $NoOllama -and $Provider -eq "ollama") {
     }
 }
 
-# 5. Register the MCP server in Claude Code (user scope)
-if (-not $NoClaude -and (Get-Command claude -ErrorAction SilentlyContinue)) {
-    Say "Registering MCP server 'rag-mcp' in Claude Code (user scope)"
-    try { claude mcp remove -s user rag-mcp 2>$null | Out-Null } catch {}
-    claude mcp add -s user rag-mcp -- uv --directory "$Root" run rag-mcp serve
+# 5. Register the MCP server and the agent skill in Claude Code, Cursor, Claude Desktop
+#    (asks about each client found; safe to repeat; undo with `uv run rag-mcp unregister`)
+if (-not $NoClaude) {
+    Say "Registering rag-mcp in agent clients"
+    $regArgs = @("run", "rag-mcp", "register")
+    if ($Yes) { $regArgs += "--yes" }
+    & uv @regArgs
+    if ($LASTEXITCODE -ne 0) { Write-Warning "Registration failed; rerun: uv run rag-mcp register" }
 }
 
 Write-Host @"
@@ -63,7 +68,8 @@ Done. Next steps:
   2. uv run rag-mcp ingest
   3. uv run rag-mcp search "your question"
   4. In Claude Code: /mcp  (rag-mcp should be listed), then just ask questions about your docs.
+     Clients: uv run rag-mcp register [--claude-code|--cursor|--claude-desktop]  (undo: uv run rag-mcp unregister)
 
-Manual MCP config for other clients (Claude Desktop, Cursor):
+Manual MCP config for other clients:
   command: uv   args: ["--directory", "$Root", "run", "rag-mcp", "serve"]
 "@
