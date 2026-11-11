@@ -40,7 +40,7 @@ fi
 mkdir -p data/docs data/index
 
 # 4. Embedding model via Ollama
-EMBED_MODEL="$(grep -E '^RAG_EMBED_MODEL=' .env | cut -d= -f2- || true)"; EMBED_MODEL="${EMBED_MODEL:-nomic-embed-text}"
+EMBED_MODEL="$(grep -E '^RAG_EMBED_MODEL=' .env | cut -d= -f2- || true)"; EMBED_MODEL="${EMBED_MODEL:-bge-m3}"
 PROVIDER="$(grep -E '^RAG_EMBED_PROVIDER=' .env | cut -d= -f2- || true)"; PROVIDER="${PROVIDER:-ollama}"
 if [ "$NO_OLLAMA" = 0 ] && [ "$PROVIDER" = ollama ]; then
   if command -v ollama >/dev/null 2>&1; then

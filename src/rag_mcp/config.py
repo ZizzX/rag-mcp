@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # Embeddings
     embed_provider: Literal["ollama", "openai", "hash"] = "ollama"
-    embed_model: str = "nomic-embed-text"
+    embed_model: str = "bge-m3"
     ollama_url: str = "http://localhost:11434"
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str | None = None
