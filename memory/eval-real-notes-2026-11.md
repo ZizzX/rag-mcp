@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: dae1915d-9a40-42cb-a959-b6f168c3a6fc
-  modified: 2026-11-11T14:04:10.317Z
+  modified: 2026-11-18T05:01:21.675Z
 ---
 
 On 2026-11-09 we measured rag-mcp on real notes (`~/.gstack/projects/apps-ats`, 141 Markdown files, Russian + English) with 20 gold questions. hit@5 over all 20: grep script 0.75, BM25 only 0.80, nomic hybrid 0.65 (the current default), bge-m3 hybrid 0.85. On paraphrase questions: grep 0.50, BM25 0.70, nomic hybrid 0.50, bge-m3 hybrid 0.80.
@@ -28,3 +28,10 @@ Also found: rag-mcp sends no `search_query:` / `search_document:` prefixes to no
   - Count `mcp__rag-mcp__search` calls in `~/.claude/projects/*/*.jsonl` newer than 2026-11-11.
   - Check whether their results were actually used in the answer.
   - Few calls, or results ignored, means freeze the plugin.
+
+**Week of real use — result (checked 2026-11-18, scheduled task rag-mcp-week-verdict):**
+- 268 transcripts (108 main sessions, mostly edo and ats Orca worktrees) changed after 2026-11-11. Real `mcp__rag-mcp__*` tool calls: 1, successful: 0.
+- The one call: 2026-11-13, edo-plankton, a read-only research subagent, `search("D-099 имена коллег маска PDP без кнопки раскрытия", all_projects)`. It failed with "No such tool available: mcp__rag-mcp__search" (the subagent type has only Read/Grep/Glob/Bash), and the agent went to grep.
+- The tool was in the deferred list of almost every session, and the rule plus skill were in place from 2026-11-11 19:39 +05 (PR #11 merged 2026-11-11T14:44Z), so the whole week ran with the rule. No main agent ever loaded the tool through ToolSearch.
+- In the same week agents looked up past context elsewhere: `plans.mjs find` 12 times, grep in `~/mystartups/plans` 14 times, `pm/` files 13 times. Nobody touched `~/.gstack/projects/apps-ats` (the only indexed source) outside rag-mcp's own sessions.
+- Verdict by the criteria: freeze. My reading of the cause: the index covers a folder agents no longer consult (notes moved to `~/mystartups/plans` and pm boards), the tool is deferred, and subagents can't call it. If the user wants one more try before freezing: connect `~/mystartups/plans` as a project and repeat the count for a week.
